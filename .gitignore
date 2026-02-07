@@ -143,3 +143,45 @@ cython_debug/
 .idea/
 .vscode/
 *.swp
+
+# Machine Learning specific
+*.pkl
+*.joblib
+*.h5
+*.hdf5
+*.ckpt
+*.pth
+*.pt
+*.onnx
+
+# Data files
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Model outputs
+models/*
+!models/.gitkeep
+
+# Outputs
+outputs/logs/*
+outputs/figures/*
+outputs/results/*
+!outputs/logs/.gitkeep
+!outputs/figures/.gitkeep
+!outputs/results/.gitkeep
+
+# Jupyter Notebook outputs
+*.ipynb_checkpoints/
+.ipynb_checkpoints
+
+# Optuna database
+optuna_study.db
+
+# Large files
+*.csv
+*.json
+*.parquet
+# Allow specific config files
+!configs/*.json
