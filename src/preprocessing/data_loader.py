@@ -13,6 +13,27 @@ from configs.config import RAW_DATA_DIR, PROCESSED_DATA_DIR, SEASONS
 from src.preprocessing.schemas import DataSchema
 
 
+def read_csv_safe(file_path: Path) -> pd.DataFrame:
+    """Read CSV with automatic encoding detection
+
+    Args:
+        file_path (Path): Path to CSV file
+
+    Returns:
+        pd.DataFrame: Loaded dataframe
+    """
+    encodings = ['utf-8', 'latin1', 'cp1252', 'iso-8859-1']
+
+    for encoding in encodings:
+        try:
+            return pd.read_csv(file_path, encoding=encoding)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+
+    # If all encodings fail, try with error handling
+    return pd.read_csv(file_path, encoding='utf-8', errors='ignore')
+
+
 class FPLDataLoader:
     """Loader for FPL datasets with automatic schema application"""
 
@@ -44,7 +65,14 @@ class FPLDataLoader:
         if not file_path.exists():
             raise FileNotFoundError(f"Player data not found for season {season} at {file_path}")
 
-        df = pd.read_csv(file_path)
+        # Try different encodings
+        try:
+            df = pd.read_csv(file_path, encoding='utf-8')
+        except UnicodeDecodeError:
+            try:
+                df = pd.read_csv(file_path, encoding='latin1')
+            except UnicodeDecodeError:
+                df = pd.read_csv(file_path, encoding='cp1252')
 
         if standardize:
             df = self.schema.prepare_player_data(df)
@@ -67,7 +95,14 @@ class FPLDataLoader:
         merged_path = self.data_dir / season / 'gws' / 'merged_gw.csv'
 
         if merged_path.exists():
-            df = pd.read_csv(merged_path)
+            # Try different encodings
+            try:
+                df = pd.read_csv(merged_path, encoding='utf-8')
+            except UnicodeDecodeError:
+                try:
+                    df = pd.read_csv(merged_path, encoding='latin1')
+                except UnicodeDecodeError:
+                    df = pd.read_csv(merged_path, encoding='cp1252')
 
             # Filter to specific gameweeks if requested
             if gameweeks is not None and 'round' in df.columns:
