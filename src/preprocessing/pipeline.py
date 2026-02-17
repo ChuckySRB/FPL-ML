@@ -1,356 +1,222 @@
 """
-Preprocessing pipeline for FPL ML models
+Preprocessing pipeline for FPL ML models.
+
+Handles:
+- Multi-season data loading + feature engineering
+- Train/test split (by season or temporal)
+- Feature selection (Tier 1 vs Tier 2)
+- Scaling for Linear Regression
+- Saving processed datasets
 """
 import sys
 from pathlib import Path
 import pandas as pd
 import numpy as np
 from typing import Tuple, List, Optional, Dict
-from sklearn.model_selection import train_test_split, TimeSeriesSplit
-from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 import joblib
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from configs.config import TEST_SIZE, VALIDATION_SIZE, RANDOM_STATE, MODELS_DIR
+from configs.config import PROCESSED_DATA_DIR, MODELS_DIR
+from src.preprocessing.data_loader import FPLDataLoader
+from src.preprocessing.feature_engineering import (
+    FPLFeatureEngineer, TIER1_FEATURES, TIER2_FEATURES,
+    prepare_training_data
+)
 
 
 class FPLPreprocessor:
-    """Preprocessing pipeline for FPL data"""
+    """End-to-end preprocessing pipeline for FPL prediction."""
 
-    def __init__(self, scaler_type: str = 'standard'):
-        """Initialize preprocessor
-
-        Args:
-            scaler_type (str): Type of scaler ('standard', 'robust', 'minmax')
-        """
-        self.scaler_type = scaler_type
-        self.scaler = None
-        self.imputer = None
+    def __init__(self):
+        self.loader = FPLDataLoader()
+        self.engineer = FPLFeatureEngineer()
+        self.scaler = StandardScaler()
+        self.imputer = SimpleImputer(strategy='median')
         self.feature_names = None
-        self.categorical_mappings = {}
 
-        # Initialize scaler
-        if scaler_type == 'standard':
-            self.scaler = StandardScaler()
-        elif scaler_type == 'robust':
-            self.scaler = RobustScaler()
-        elif scaler_type == 'minmax':
-            self.scaler = MinMaxScaler()
-        else:
-            raise ValueError(f"Unknown scaler type: {scaler_type}")
-
-    def handle_missing_values(self, df: pd.DataFrame,
-                             strategy: str = 'median',
-                             fill_value: float = 0) -> pd.DataFrame:
-        """Handle missing values
+    def build_dataset(self,
+                      train_seasons: List[str],
+                      test_season: str,
+                      tier: int = 2,
+                      min_gw: int = 6) -> Dict:
+        """Build full train/test dataset from raw data.
 
         Args:
-            df (pd.DataFrame): Input data
-            strategy (str): Imputation strategy ('mean', 'median', 'most_frequent', 'constant')
-            fill_value (float): Fill value for 'constant' strategy
+            train_seasons: Seasons to use for training (e.g., ['2022-23'])
+            test_season: Season to use for testing (e.g., '2023-24')
+            tier: Feature tier (1=baseline, 2=full)
+            min_gw: Minimum GW to include per season
 
         Returns:
-            pd.DataFrame: Data with imputed values
+            Dict with X_train, X_test, y_train, y_test, and metadata
         """
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        print("=" * 60)
+        print("BUILDING DATASET")
+        print("=" * 60)
 
-        if strategy == 'constant':
-            self.imputer = SimpleImputer(strategy=strategy, fill_value=fill_value)
-        else:
-            self.imputer = SimpleImputer(strategy=strategy)
+        # --- Load and engineer TRAINING data ---
+        print(f"\n1. Loading training data: {train_seasons}")
+        train_df = self._load_and_engineer(train_seasons, tier)
+        train_df = prepare_training_data(train_df, min_gw=min_gw)
+        print(f"   Training records: {len(train_df):,}")
 
-        df[numeric_cols] = self.imputer.fit_transform(df[numeric_cols])
+        # --- Load and engineer TEST data ---
+        print(f"\n2. Loading test data: {test_season}")
+        test_df = self._load_and_engineer([test_season], tier)
+        test_df = prepare_training_data(test_df, min_gw=min_gw)
+        print(f"   Test records: {len(test_df):,}")
 
-        return df
+        # --- Select features ---
+        feature_list = TIER1_FEATURES if tier == 1 else TIER2_FEATURES
+        available_features = [f for f in feature_list if f in train_df.columns]
+        missing_features = [f for f in feature_list if f not in train_df.columns]
 
-    def encode_categorical(self, df: pd.DataFrame,
-                          categorical_cols: Optional[List[str]] = None) -> pd.DataFrame:
-        """Encode categorical variables
+        if missing_features:
+            print(f"\n   Warning: Missing features: {missing_features}")
 
-        Args:
-            df (pd.DataFrame): Input data
-            categorical_cols (list): List of categorical columns
+        print(f"\n3. Features selected ({len(available_features)}):")
+        for f in available_features:
+            print(f"   - {f}")
 
-        Returns:
-            pd.DataFrame: Data with encoded categories
-        """
-        df = df.copy()
+        self.feature_names = available_features
 
-        if categorical_cols is None:
-            # Auto-detect categorical columns
-            categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        # --- Extract X and y ---
+        X_train = train_df[available_features].copy()
+        y_train = train_df['total_points'].copy()
+        X_test = test_df[available_features].copy()
+        y_test = test_df['total_points'].copy()
 
-        for col in categorical_cols:
-            if col not in df.columns:
-                continue
+        # --- Handle missing values ---
+        print(f"\n4. Handling missing values...")
+        n_missing_train = X_train.isnull().sum().sum()
+        n_missing_test = X_test.isnull().sum().sum()
+        print(f"   Train missing: {n_missing_train}, Test missing: {n_missing_test}")
 
-            # Label encoding for ordinal or low-cardinality features
-            if df[col].nunique() < 50:
-                unique_vals = df[col].unique()
-                mapping = {val: idx for idx, val in enumerate(unique_vals)}
-                self.categorical_mappings[col] = mapping
-                df[col] = df[col].map(mapping)
-            else:
-                # One-hot encoding for high-cardinality features
-                dummies = pd.get_dummies(df[col], prefix=col, drop_first=True)
-                df = pd.concat([df.drop(columns=[col]), dummies], axis=1)
-
-        return df
-
-    def scale_features(self, X: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
-        """Scale numerical features
-
-        Args:
-            X (pd.DataFrame): Features to scale
-            fit (bool): Whether to fit the scaler (True for train, False for test)
-
-        Returns:
-            pd.DataFrame: Scaled features
-        """
-        if fit:
-            X_scaled = self.scaler.fit_transform(X)
-            self.feature_names = X.columns.tolist()
-        else:
-            X_scaled = self.scaler.transform(X)
-
-        return pd.DataFrame(X_scaled, columns=X.columns, index=X.index)
-
-    def select_features(self, df: pd.DataFrame,
-                       exclude_cols: Optional[List[str]] = None,
-                       target_col: str = 'total_points') -> Tuple[pd.DataFrame, pd.Series]:
-        """Select features and target
-
-        Args:
-            df (pd.DataFrame): Input data
-            exclude_cols (list): Columns to exclude from features
-            target_col (str): Target column name
-
-        Returns:
-            tuple: (X, y) features and target
-        """
-        if exclude_cols is None:
-            # Default columns to exclude
-            exclude_cols = [
-                'element', 'round', 'fixture', 'kickoff_time',
-                'opponent_team', 'was_home', 'season',
-                'web_name', 'first_name', 'second_name', 'name'
-            ]
-
-        # Add target to exclusion list
-        exclude_cols = list(set(exclude_cols + [target_col]))
-
-        # Select feature columns
-        feature_cols = [col for col in df.columns if col not in exclude_cols]
-
-        X = df[feature_cols].select_dtypes(include=[np.number])
-        y = df[target_col] if target_col in df.columns else None
-
-        return X, y
-
-    def create_train_test_split(self, X: pd.DataFrame, y: pd.Series,
-                                test_size: float = TEST_SIZE,
-                                random_state: int = RANDOM_STATE,
-                                stratify_col: Optional[pd.Series] = None) -> Tuple:
-        """Create train/test split
-
-        Args:
-            X (pd.DataFrame): Features
-            y (pd.Series): Target
-            test_size (float): Test set size
-            random_state (int): Random seed
-            stratify_col (pd.Series): Column for stratification
-
-        Returns:
-            tuple: (X_train, X_test, y_train, y_test)
-        """
-        return train_test_split(
-            X, y,
-            test_size=test_size,
-            random_state=random_state,
-            stratify=stratify_col,
-            shuffle=True
+        X_train = pd.DataFrame(
+            self.imputer.fit_transform(X_train),
+            columns=available_features, index=X_train.index
+        )
+        X_test = pd.DataFrame(
+            self.imputer.transform(X_test),
+            columns=available_features, index=X_test.index
         )
 
-    def create_time_series_splits(self, df: pd.DataFrame,
-                                  n_splits: int = 5) -> TimeSeriesSplit:
-        """Create time series cross-validation splits
-
-        Args:
-            df (pd.DataFrame): Data sorted by time
-            n_splits (int): Number of splits
-
-        Returns:
-            TimeSeriesSplit: Time series splitter
-        """
-        return TimeSeriesSplit(n_splits=n_splits)
-
-    def create_temporal_split(self, df: pd.DataFrame,
-                             date_col: str = 'round',
-                             test_rounds: int = 5) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Split data temporally (use recent gameweeks for testing)
-
-        Args:
-            df (pd.DataFrame): Data with temporal column
-            date_col (str): Column indicating time (gameweek)
-            test_rounds (int): Number of recent rounds for test set
-
-        Returns:
-            tuple: (train_df, test_df)
-        """
-        if date_col not in df.columns:
-            raise ValueError(f"Column {date_col} not found in dataframe")
-
-        # Get unique sorted rounds
-        rounds = sorted(df[date_col].unique())
-
-        # Split point
-        split_round = rounds[-test_rounds] if len(rounds) > test_rounds else rounds[0]
-
-        train_df = df[df[date_col] < split_round].copy()
-        test_df = df[df[date_col] >= split_round].copy()
-
-        return train_df, test_df
-
-    def prepare_for_training(self, df: pd.DataFrame,
-                            target_col: str = 'total_points',
-                            temporal_split: bool = True,
-                            test_rounds: int = 5,
-                            scale: bool = True,
-                            handle_missing: bool = True) -> Dict:
-        """Complete preprocessing pipeline
-
-        Args:
-            df (pd.DataFrame): Feature-engineered data
-            target_col (str): Target column
-            temporal_split (bool): Use temporal split instead of random
-            test_rounds (int): Rounds for test set (if temporal_split=True)
-            scale (bool): Whether to scale features
-            handle_missing (bool): Whether to impute missing values
-
-        Returns:
-            dict: Dictionary with train/test data and metadata
-        """
-        print("Preprocessing pipeline:")
-        df = df.copy()
-
-        # Handle missing values
-        if handle_missing:
-            print("  → Handling missing values...")
-            df = self.handle_missing_values(df)
-
-        # Encode categorical variables
-        print("  → Encoding categorical variables...")
-        df = self.encode_categorical(df)
-
-        # Create train/test split
-        if temporal_split and 'round' in df.columns:
-            print(f"  → Creating temporal split ({test_rounds} test rounds)...")
-            train_df, test_df = self.create_temporal_split(df, test_rounds=test_rounds)
-        else:
-            print("  → Creating random train/test split...")
-            train_df, test_df = train_test_split(
-                df, test_size=TEST_SIZE, random_state=RANDOM_STATE
-            )
-
-        # Select features
-        print("  → Selecting features...")
-        X_train, y_train = self.select_features(train_df, target_col=target_col)
-        X_test, y_test = self.select_features(test_df, target_col=target_col)
-
-        # Scale features
-        if scale:
-            print(f"  → Scaling features ({self.scaler_type})...")
-            X_train = self.scale_features(X_train, fit=True)
-            X_test = self.scale_features(X_test, fit=False)
-
-        print("✓ Preprocessing complete!")
-        print(f"  Train size: {len(X_train):,}")
-        print(f"  Test size: {len(X_test):,}")
-        print(f"  Features: {len(X_train.columns)}")
+        # --- Summary ---
+        print(f"\n{'=' * 60}")
+        print("DATASET READY")
+        print(f"{'=' * 60}")
+        print(f"  Train: {X_train.shape[0]:,} samples, {X_train.shape[1]} features")
+        print(f"  Test:  {X_test.shape[0]:,} samples, {X_test.shape[1]} features")
+        print(f"  Target (train): mean={y_train.mean():.2f}, std={y_train.std():.2f}")
+        print(f"  Target (test):  mean={y_test.mean():.2f}, std={y_test.std():.2f}")
 
         return {
             'X_train': X_train,
             'X_test': X_test,
             'y_train': y_train,
             'y_test': y_test,
+            'feature_names': available_features,
             'train_df': train_df,
             'test_df': test_df,
-            'feature_names': X_train.columns.tolist(),
-            'scaler': self.scaler,
-            'imputer': self.imputer,
         }
 
-    def save_pipeline(self, filepath: str):
-        """Save preprocessing pipeline
+    def scale_for_linear(self, X_train: pd.DataFrame,
+                         X_test: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Scale features for Linear Regression (StandardScaler).
 
-        Args:
-            filepath (str): Path to save pipeline
+        XGBoost does NOT need scaling - only call this for Linear Regression.
         """
-        pipeline_data = {
+        cols = X_train.columns
+        X_train_scaled = pd.DataFrame(
+            self.scaler.fit_transform(X_train), columns=cols, index=X_train.index
+        )
+        X_test_scaled = pd.DataFrame(
+            self.scaler.transform(X_test), columns=cols, index=X_test.index
+        )
+        return X_train_scaled, X_test_scaled
+
+    def _load_and_engineer(self, seasons: List[str], tier: int) -> pd.DataFrame:
+        """Load raw data for seasons and run feature engineering."""
+        # Load combined gameweek data
+        gw_df = self.loader.load_multi_season(seasons)
+
+        # For each season, load teams and fixtures for opponent features
+        # Use the last season's teams/fixtures as representative
+        last_season = seasons[-1]
+        teams_df = self.loader.load_teams(last_season)
+        try:
+            fixtures_df = self.loader.load_fixtures(last_season)
+        except FileNotFoundError:
+            fixtures_df = None
+
+        # Fix team column if it's 0 (broken in some merged_gw.csv files)
+        if 'team' in gw_df.columns and (gw_df['team'] == 0).mean() > 0.5:
+            print("   Warning: 'team' column is mostly 0, attempting to fix...")
+            # Try to infer team from player data
+            for season in seasons:
+                try:
+                    players_df = self.loader.load_players(season)
+                    if 'id' in players_df.columns and 'team' in players_df.columns:
+                        team_map = players_df.set_index('id')['team'].to_dict()
+                        mask = gw_df['season'] == season
+                        gw_df.loc[mask, 'team'] = gw_df.loc[mask, 'element'].map(team_map)
+                        print(f"   Fixed team IDs for {season} using players data")
+                except FileNotFoundError:
+                    pass
+
+        # Run feature engineering
+        print(f"   Engineering features (Tier {tier})...")
+        df = self.engineer.create_all_features(
+            gw_df, teams_df=teams_df, fixtures_df=fixtures_df, tier=tier
+        )
+
+        return df
+
+    def save(self, data: Dict, name: str = 'default'):
+        """Save processed datasets and pipeline."""
+        output_dir = PROCESSED_DATA_DIR / name
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        data['X_train'].to_csv(output_dir / 'X_train.csv', index=False)
+        data['X_test'].to_csv(output_dir / 'X_test.csv', index=False)
+        data['y_train'].to_csv(output_dir / 'y_train.csv', index=False, header=['total_points'])
+        data['y_test'].to_csv(output_dir / 'y_test.csv', index=False, header=['total_points'])
+
+        # Save pipeline objects
+        pipeline_path = output_dir / 'pipeline.pkl'
+        joblib.dump({
             'scaler': self.scaler,
             'imputer': self.imputer,
             'feature_names': self.feature_names,
-            'categorical_mappings': self.categorical_mappings,
-            'scaler_type': self.scaler_type
-        }
+        }, pipeline_path)
 
-        joblib.dump(pipeline_data, filepath)
-        print(f"Pipeline saved to {filepath}")
-
-    def load_pipeline(self, filepath: str):
-        """Load preprocessing pipeline
-
-        Args:
-            filepath (str): Path to pipeline file
-        """
-        pipeline_data = joblib.load(filepath)
-
-        self.scaler = pipeline_data['scaler']
-        self.imputer = pipeline_data['imputer']
-        self.feature_names = pipeline_data['feature_names']
-        self.categorical_mappings = pipeline_data['categorical_mappings']
-        self.scaler_type = pipeline_data['scaler_type']
-
-        print(f"Pipeline loaded from {filepath}")
+        print(f"\nSaved to {output_dir.name}/:")
+        print(f"  X_train.csv  ({data['X_train'].shape})")
+        print(f"  X_test.csv   ({data['X_test'].shape})")
+        print(f"  y_train.csv  ({len(data['y_train'])} records)")
+        print(f"  y_test.csv   ({len(data['y_test'])} records)")
+        print(f"  pipeline.pkl")
 
 
 def create_position_specific_data(df: pd.DataFrame,
                                   position: str) -> pd.DataFrame:
-    """Filter data for position-specific modeling
-
-    Args:
-        df (pd.DataFrame): Full dataset with position_label
-        position (str): Position to filter ('GK', 'DEF', 'MID', 'FWD')
-
-    Returns:
-        pd.DataFrame: Position-filtered data
-    """
+    """Filter data for position-specific modeling."""
     if 'position_label' not in df.columns:
         raise ValueError("position_label column not found")
-
     return df[df['position_label'] == position].copy()
 
 
 def get_feature_columns_by_type(df: pd.DataFrame) -> Dict[str, List[str]]:
-    """Categorize features by type for analysis
-
-    Args:
-        df (pd.DataFrame): Feature dataframe
-
-    Returns:
-        dict: Feature categories
-    """
+    """Categorize features by type for analysis."""
     features = {
-        'rolling': [col for col in df.columns if 'rolling' in col],
-        'lag': [col for col in df.columns if 'lag' in col],
+        'rolling': [col for col in df.columns if 'rolling' in col or 'last_' in col],
         'form': [col for col in df.columns if 'form' in col or 'consistency' in col],
         'opponent': [col for col in df.columns if 'opponent' in col],
-        'home_away': [col for col in df.columns if 'home' in col or 'away' in col],
-        'value': [col for col in df.columns if 'cost' in col or 'value' in col or 'transfer' in col],
-        'attacking': [col for col in df.columns if any(x in col for x in ['goal', 'assist', 'xg', 'xa', 'creativity', 'threat'])],
-        'defensive': [col for col in df.columns if any(x in col for x in ['clean_sheet', 'save', 'conceded', 'xgc'])],
-        'base': ['minutes', 'total_points', 'bonus', 'bps', 'influence', 'ict_index']
+        'team': [col for col in df.columns if 'team_strength' in col],
+        'position': [col for col in df.columns if col.startswith('pos_')],
+        'cumulative': [col for col in df.columns if 'cumulative' in col or 'games_played' in col],
+        'value': [col for col in df.columns if col in ('price', 'selected_pct')],
     }
-
     return {k: [col for col in v if col in df.columns] for k, v in features.items()}
