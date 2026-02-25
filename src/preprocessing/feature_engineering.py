@@ -43,6 +43,14 @@ class FPLFeatureEngineer:
     def __init__(self, rolling_windows: Optional[List[int]] = None):
         self.rolling_windows = rolling_windows or [3, 5]
 
+    def _group_key(self, df: pd.DataFrame):
+        """Return groupby key: ['element', 'season'] if multi-season, else 'element'.
+
+        Using season in the group key prevents rolling windows from spanning
+        across season boundaries (rounds reset 1→38 each season).
+        """
+        return ['element', 'season'] if 'season' in df.columns else ['element']
+
     def create_tier1_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Create Tier 1 (baseline) features for Linear Regression.
 
@@ -56,7 +64,7 @@ class FPLFeatureEngineer:
           - value: player price / 10
         """
         df = df.copy()
-        g = df.groupby('element')
+        g = df.groupby(self._group_key(df))
 
         # Form: average points in last 3 and 5 games (shifted!)
         df['form_last_3'] = g['total_points'].transform(
@@ -90,7 +98,7 @@ class FPLFeatureEngineer:
         All Tier 1 features PLUS additional rolling stats.
         """
         df = df.copy()
-        g = df.groupby('element')
+        g = df.groupby(self._group_key(df))
 
         # --- Rolling last-5 stats ---
         rolling5_cols = {
@@ -219,7 +227,10 @@ class FPLFeatureEngineer:
         """Create all features for the specified tier.
 
         Args:
-            df: Gameweek data (must be sorted by element, round)
+            df: Gameweek data for a SINGLE season only. For multiple seasons,
+                call this function once per season and concatenate afterward.
+                Passing combined multi-season data will break rolling windows
+                because rounds reset 1→38 each season.
             teams_df: Team data from teams.csv
             fixtures_df: Fixture data from fixtures.csv
             tier: 1 for baseline features, 2 for all features
@@ -227,8 +238,11 @@ class FPLFeatureEngineer:
         Returns:
             DataFrame with engineered features added
         """
-        # Ensure sorted
-        df = df.sort_values(['element', 'round']).reset_index(drop=True)
+        # Sort by season (if present) then element then round.
+        # Season must come before round to prevent cross-season interleaving.
+        sort_cols = (['element', 'season', 'round'] if 'season' in df.columns
+                     else ['element', 'round'])
+        df = df.sort_values(sort_cols).reset_index(drop=True)
 
         print("  Creating Tier 1 (baseline) features...")
         df = self.create_tier1_features(df)
