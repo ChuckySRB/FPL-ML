@@ -9,6 +9,12 @@ from .FPLNet import (
     FPLMultiTaskTrainer,
 )
 
+from .Trainer import NNTrainer
+from .MLP import MLP
+from .CNN import CNN
+
+
+
 __all__ = [
     'GatedResidualNetwork',
     'VariableSelectionNetwork',
@@ -18,4 +24,7 @@ __all__ = [
     'FPLNet',
     'FPLNetTrainer',       
     'FPLMultiTaskTrainer',
+    'NNTrainer',
+    'MLP',
+    'CNN',
 ]
