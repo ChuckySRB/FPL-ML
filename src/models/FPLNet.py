@@ -232,11 +232,17 @@ class FPLNetTrainer:
         self.train_losses = []
         self.val_losses = []
 
-    def fit(self, X: np.ndarray, y: np.ndarray, val_split: float = 0.1):
+    def fit(self, X: np.ndarray, y: np.ndarray, val_split: float = 0.1,
+            sample_weight: np.ndarray = None):
+        """
+        Args:
+            sample_weight: Optional per-sample weights (e.g. hauler_weights(y)).
+                           Normalised internally so mean weight = 1.
+                           Validation loss is always unweighted.
+        """
         self.model = FPLNet(**self.hparams).to(self.device)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=1e-4)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
-        criterion = nn.HuberLoss(delta=1.5)
 
         # Split validation set
         n_val = int(len(X) * val_split)
@@ -244,8 +250,18 @@ class FPLNetTrainer:
         X_val, y_val = X[idx[:n_val]], y[idx[:n_val]]
         X_tr,  y_tr  = X[idx[n_val:]], y[idx[n_val:]]
 
-        tr_loader = self._make_loader(X_tr, y_tr, shuffle=True)
-        val_loader = self._make_loader(X_val, y_val, shuffle=False)
+        # Sample weights — normalise so mean = 1; validation is always unweighted
+        sw_tr = None
+        if sample_weight is not None:
+            sw = np.array(sample_weight, dtype='float32')
+            sw /= sw.mean()
+            sw_tr = sw[idx[n_val:]]
+
+        tr_loader  = self._make_loader(X_tr, y_tr, sw_tr, shuffle=True)
+        val_loader = self._make_loader(X_val, y_val, None, shuffle=False)
+
+        crit_per_sample = nn.HuberLoss(delta=1.5, reduction='none')
+        crit_val        = nn.HuberLoss(delta=1.5)
 
         best_val, patience_cnt = float('inf'), 0
         best_state = None
@@ -254,19 +270,21 @@ class FPLNetTrainer:
             # Train
             self.model.train()
             tr_loss = 0.0
-            for Xb, yb in tr_loader:
-                Xb, yb = Xb.to(self.device), yb.to(self.device)
+            for batch in tr_loader:
+                Xb, yb = batch[0].to(self.device), batch[1].to(self.device)
+                wb = batch[2].to(self.device) if len(batch) == 3 else None
                 optimizer.zero_grad()
                 pred = self.model(Xb)
-                loss = criterion(pred, yb)
+                losses = crit_per_sample(pred, yb)
+                loss = (losses * wb).mean() if wb is not None else losses.mean()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 optimizer.step()
                 tr_loss += loss.item() * len(Xb)
             tr_loss /= len(X_tr)
 
-            # Validate
-            val_loss = self._eval_loss(val_loader, criterion)
+            # Validate (unweighted)
+            val_loss = self._eval_loss(val_loader, crit_val)
             scheduler.step(val_loss)
             self.train_losses.append(tr_loss)
             self.val_losses.append(val_loss)
@@ -299,10 +317,12 @@ class FPLNetTrainer:
                 preds.append(self.model(Xb.to(self.device)).cpu().numpy())
         return np.concatenate(preds)
 
-    def _make_loader(self, X, y, shuffle):
-        Xt = torch.tensor(X, dtype=torch.float32)
-        yt = torch.tensor(y, dtype=torch.float32)
-        return DataLoader(TensorDataset(Xt, yt), batch_size=self.batch_size,
+    def _make_loader(self, X, y, weights=None, shuffle=True):
+        tensors = [torch.tensor(X, dtype=torch.float32),
+                   torch.tensor(y, dtype=torch.float32)]
+        if weights is not None:
+            tensors.append(torch.tensor(weights, dtype=torch.float32))
+        return DataLoader(TensorDataset(*tensors), batch_size=self.batch_size,
                           shuffle=shuffle, drop_last=False)
 
     def _eval_loss(self, loader, criterion):
