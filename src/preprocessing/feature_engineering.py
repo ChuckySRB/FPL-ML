@@ -149,6 +149,70 @@ class FPLFeatureEngineer:
 
         return df
 
+    def create_tier3_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create Tier 3 (advanced) features — ideas from FEATURE_IDEAS.md.
+
+        Requires Tier 1 + Tier 2 features to already exist on df.
+
+        Features added:
+          best_3_streak_season  — season-best consecutive 3-game points sum (shifted)
+          best_5_streak_season  — season-best consecutive 5-game points sum (shifted)
+          red_card_last_game    — 1 if player received a red card last GW (suspended)
+          hauler_rate_season    — % of games this season where player scored 5+ pts
+          points_std_last_10    — rolling std of points over last 10 GWs (shifted)
+          form_momentum         — form_last_3 minus form_last_5 (positive = improving)
+        """
+        df = df.copy()
+        g = df.groupby(self._group_key(df))
+
+        # ── 1. Season-best form streaks ───────────────────────────────────────
+        # For each GW N, what was the best 3-game consecutive sum up to GW N-1?
+        # Uses shift(1) → no leakage; min_periods=window ensures full window.
+        df['best_3_streak_season'] = g['total_points'].transform(
+            lambda x: (x.shift(1)
+                        .rolling(3, min_periods=3)
+                        .sum()
+                        .expanding()
+                        .max())
+        )
+        df['best_5_streak_season'] = g['total_points'].transform(
+            lambda x: (x.shift(1)
+                        .rolling(5, min_periods=5)
+                        .sum()
+                        .expanding()
+                        .max())
+        )
+
+        # ── 2. Red card / suspension flag ─────────────────────────────────────
+        # A red card in GW N-1 almost always means suspension in GW N.
+        # clip(upper=1) turns multi-red-card edge cases into a clean 0/1 flag.
+        if 'red_cards' in df.columns:
+            df['red_card_last_game'] = g['red_cards'].transform(
+                lambda x: x.shift(1).clip(upper=1).astype(float)
+            )
+
+        # ── 3. Return consistency: hauler rate ────────────────────────────────
+        # Expanding proportion of games this season where player scored 5+ pts.
+        # min_periods=3 so the ratio is only trusted after at least 3 games.
+        df['hauler_rate_season'] = g['total_points'].transform(
+            lambda x: (x >= 5).astype(float).shift(1).expanding(min_periods=3).mean()
+        )
+
+        # ── 4. Return consistency: points volatility ──────────────────────────
+        # Rolling std over last 10 GWs. High std = streaky/volatile player.
+        # Combine with hauler_rate to distinguish consistent haulers vs flukes.
+        df['points_std_last_10'] = g['total_points'].transform(
+            lambda x: x.shift(1).rolling(10, min_periods=3).std()
+        )
+
+        # ── 5. Form momentum (derived from Tier 1 features) ───────────────────
+        # Positive  → player is on form (recent avg > medium-term avg)
+        # Negative  → player is cooling off or in a slump
+        if 'form_last_3' in df.columns and 'form_last_5' in df.columns:
+            df['form_momentum'] = df['form_last_3'] - df['form_last_5']
+
+        return df
+
     def add_opponent_features(self, df: pd.DataFrame,
                               teams_df: pd.DataFrame,
                               fixtures_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
@@ -251,6 +315,10 @@ class FPLFeatureEngineer:
             print("  Creating Tier 2 (extended) features...")
             df = self.create_tier2_features(df)
 
+        if tier >= 3:
+            print("  Creating Tier 3 (advanced consistency) features...")
+            df = self.create_tier3_features(df)
+
         if teams_df is not None:
             print("  Adding opponent/team features...")
             df = self.add_opponent_features(df, teams_df, fixtures_df)
@@ -285,6 +353,17 @@ TIER2_FEATURES = TIER1_FEATURES + [
     'selected_pct', 'team_strength', 'opponent_strength',
     'cumulative_points_season', 'games_played_season',
     'minutes_last_5',
+]
+
+TIER3_FEATURES = TIER2_FEATURES + [
+    # Best seasonal streaks (idea 1)
+    'best_3_streak_season', 'best_5_streak_season',
+    # Suspension flag (idea 3)
+    'red_card_last_game',
+    # Return consistency metrics (idea 4)
+    'hauler_rate_season', 'points_std_last_10',
+    # Form momentum (derived)
+    'form_momentum',
 ]
 
 

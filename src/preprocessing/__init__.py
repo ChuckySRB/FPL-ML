@@ -20,6 +20,7 @@ from .feature_engineering import (
     prepare_training_data,
     TIER1_FEATURES,
     TIER2_FEATURES,
+    TIER3_FEATURES,
 )
 
 from .pipeline import (
@@ -36,7 +37,7 @@ __all__ = [
     'FPLDataLoader', 'quick_load', 'read_csv_safe',
     # Feature engineering
     'FPLFeatureEngineer', 'prepare_training_data',
-    'TIER1_FEATURES', 'TIER2_FEATURES',
+    'TIER1_FEATURES', 'TIER2_FEATURES', 'TIER3_FEATURES',
     # Pipeline
     'FPLPreprocessor', 'create_position_specific_data', 'get_feature_columns_by_type',
 ]
