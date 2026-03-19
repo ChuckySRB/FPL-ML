@@ -1,0 +1,8 @@
+[] Split the data for training into AT DEF MID GK
+[] Corssvalidate the data equaly
+[] Test 3 layers of complexity (define each)
+[] First test on Linear Regresor and XGboost
+[] Do the corelation coeficiant on the every features, and new features
+[] Add 10 and 38 avrg match stats
+[] When best features figured out, test on other models, such as MLP and SVM
+[] Finaly train on all the data, choosen features and best model, with deffensive contributions, and predict points for next game week, and next 5 game weeks.
