@@ -44,12 +44,10 @@ class FPLFeatureEngineer:
         self.rolling_windows = rolling_windows or [3, 5]
 
     def _group_key(self, df: pd.DataFrame):
-        """Return groupby key: ['element', 'season'] if multi-season, else 'element'.
+        """Return groupby key: ['element'] if multi-season, else 'element'.
 
-        Using season in the group key prevents rolling windows from spanning
-        across season boundaries (rounds reset 1→38 each season).
         """
-        return ['element', 'season'] if 'season' in df.columns else ['element']
+        return ['element']
 
     def create_tier1_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Create Tier 1 (baseline) features for Linear Regression.
@@ -93,7 +91,7 @@ class FPLFeatureEngineer:
         return df
 
     def create_tier2_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create Tier 2 (extended) features for XGBoost.
+        """Create Tier 2 (extended) features
 
         All Tier 1 features PLUS additional rolling stats.
         """
