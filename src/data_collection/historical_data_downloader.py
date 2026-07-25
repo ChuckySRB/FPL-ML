@@ -25,13 +25,15 @@ def download_file(url, save_path, description=""):
     Returns:
         bool: True if successful, False otherwise
     """
+    save_path = Path(save_path)
+    partial_path = save_path.with_suffix(save_path.suffix + '.part')
     try:
         response = requests.get(url, stream=True, timeout=30)
         if response.status_code == 200:
             save_path.parent.mkdir(parents=True, exist_ok=True)
             total_size = int(response.headers.get('content-length', 0))
 
-            with open(save_path, 'wb') as f:
+            with open(partial_path, 'wb') as f:
                 if total_size == 0:
                     f.write(response.content)
                 else:
@@ -40,11 +42,16 @@ def download_file(url, save_path, description=""):
                         for chunk in response.iter_content(chunk_size=8192):
                             f.write(chunk)
                             pbar.update(len(chunk))
+            if not partial_path.exists() or partial_path.stat().st_size == 0:
+                raise IOError(f'Empty response for {url}')
+            partial_path.replace(save_path)
             return True
         else:
             print(f"  ✗ Failed to download {url} (Status: {response.status_code})")
             return False
     except Exception as e:
+        if partial_path.exists():
+            partial_path.unlink()
         print(f"  ✗ Error downloading {url}: {str(e)}")
         return False
 

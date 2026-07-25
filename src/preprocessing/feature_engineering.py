@@ -47,7 +47,110 @@ class FPLFeatureEngineer:
         """Return groupby key: ['element'] if multi-season, else 'element'.
 
         """
-        return ['element']
+        return ['season', 'element'] if 'season' in df.columns else ['element']
+
+    def _round_feature(self, df: pd.DataFrame, source: str, window: int,
+                       statistic: str = 'mean',
+                       round_aggregation: str = 'sum') -> pd.Series:
+        '''Calculate a lagged rolling feature without leaking within a DGW.
+
+        All fixtures in the same gameweek receive the same value calculated
+        solely from completed earlier gameweeks.
+        '''
+        player_keys = self._group_key(df)
+        round_keys = player_keys + ['round']
+        per_round = (
+            df.groupby(round_keys, sort=False, dropna=False)[source]
+            .agg(round_aggregation)
+            .reset_index()
+            .sort_values(round_keys)
+        )
+        grouped = per_round.groupby(player_keys, sort=False)[source]
+        calculators = {
+            'mean': _shifted_rolling_mean,
+            'sum': _shifted_rolling_sum,
+            'std': _shifted_rolling_std,
+        }
+        if statistic not in calculators:
+            raise ValueError(f'Unsupported statistic: {statistic}')
+        per_round['_feature_value'] = grouped.transform(
+            lambda x: calculators[statistic](x, window))
+
+        original = df[round_keys].copy()
+        original['_row_order'] = np.arange(len(df))
+        return (
+            original.merge(
+                per_round[round_keys + ['_feature_value']],
+                on=round_keys,
+                how='left',
+            )
+            .sort_values('_row_order')['_feature_value']
+            .set_axis(df.index)
+        )
+
+    def _expanding_round_feature(
+            self, df: pd.DataFrame, source: str, operation: str,
+            round_aggregation: str = 'sum') -> pd.Series:
+        '''Calculate a lagged expanding feature at gameweek boundaries.'''
+        player_keys = self._group_key(df)
+        round_keys = player_keys + ['round']
+        per_round = (
+            df.groupby(round_keys, sort=False, dropna=False)[source]
+            .agg(round_aggregation)
+            .reset_index()
+            .sort_values(round_keys)
+        )
+
+        def calculate(series):
+            if operation == 'cumsum':
+                return series.shift(1).cumsum()
+            if operation == 'count_positive':
+                return (series > 0).shift(1).cumsum()
+            raise ValueError(f'Unsupported operation: {operation}')
+
+        per_round['_feature_value'] = (
+            per_round.groupby(player_keys, sort=False)[source]
+            .transform(calculate)
+        )
+        original = df[round_keys].copy()
+        original['_row_order'] = np.arange(len(df))
+        return (
+            original.merge(
+                per_round[round_keys + ['_feature_value']],
+                on=round_keys,
+                how='left',
+            )
+            .sort_values('_row_order')['_feature_value']
+            .set_axis(df.index)
+        )
+
+    def _custom_round_feature(self, df: pd.DataFrame, source: str,
+                              calculator,
+                              round_aggregation: str = 'sum') -> pd.Series:
+        '''Map a custom lagged calculation from player-rounds to fixtures.'''
+        player_keys = self._group_key(df)
+        round_keys = player_keys + ['round']
+        per_round = (
+            df.groupby(round_keys, sort=False, dropna=False)[source]
+            .agg(round_aggregation)
+            .reset_index()
+            .sort_values(round_keys)
+        )
+        per_round['_feature_value'] = (
+            per_round.groupby(player_keys, sort=False)[source]
+            .transform(calculator)
+        )
+        original = df[round_keys].copy()
+        original['_row_order'] = np.arange(len(df))
+        return (
+            original.merge(
+                per_round[round_keys + ['_feature_value']],
+                on=round_keys,
+                how='left',
+            )
+            .sort_values('_row_order')['_feature_value']
+            .set_axis(df.index)
+        )
 
     def create_tier1_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Create Tier 1 (baseline) features for Linear Regression.
@@ -62,22 +165,16 @@ class FPLFeatureEngineer:
           - value: player price / 10
         """
         df = df.copy()
-        g = df.groupby(self._group_key(df))
-
         # Form: average points in last 3 and 5 games (shifted!)
-        df['form_last_3'] = g['total_points'].transform(
-            lambda x: _shifted_rolling_mean(x, 3))
-        df['form_last_5'] = g['total_points'].transform(
-            lambda x: _shifted_rolling_mean(x, 5))
+        df['form_last_3'] = self._round_feature(df, 'total_points', 3)
+        df['form_last_5'] = self._round_feature(df, 'total_points', 5)
 
         # Minutes: average over last 3 games
-        df['minutes_last_3'] = g['minutes'].transform(
-            lambda x: _shifted_rolling_mean(x, 3))
+        df['minutes_last_3'] = self._round_feature(df, 'minutes', 3)
 
         # ICT index: average over last 3 games
         if 'ict_index' in df.columns:
-            df['ict_index_last_3'] = g['ict_index'].transform(
-                lambda x: _shifted_rolling_mean(x, 3))
+            df['ict_index_last_3'] = self._round_feature(df, 'ict_index', 3)
 
         # Value as price in millions
         if 'value' in df.columns:
@@ -96,8 +193,6 @@ class FPLFeatureEngineer:
         All Tier 1 features PLUS additional rolling stats.
         """
         df = df.copy()
-        g = df.groupby(self._group_key(df))
-
         # --- Rolling last-5 stats ---
         rolling5_cols = {
             'goals_scored': 'goals_last_5',
@@ -114,8 +209,7 @@ class FPLFeatureEngineer:
 
         for src_col, feat_name in rolling5_cols.items():
             if src_col in df.columns:
-                df[feat_name] = g[src_col].transform(
-                    lambda x: _shifted_rolling_mean(x, 5))
+                df[feat_name] = self._round_feature(df, src_col, 5)
 
         # --- xG/xA features (available in 2022-23+) ---
         xg_cols = {
@@ -125,25 +219,23 @@ class FPLFeatureEngineer:
         }
         for src_col, feat_name in xg_cols.items():
             if src_col in df.columns:
-                df[feat_name] = g[src_col].transform(
-                    lambda x: _shifted_rolling_mean(x, 5))
+                df[feat_name] = self._round_feature(df, src_col, 5)
 
         # --- Season cumulative features ---
         # Cumulative points so far this season (shifted - excludes current GW)
-        df['cumulative_points_season'] = g['total_points'].transform(
-            lambda x: x.shift(1).cumsum())
+        df['cumulative_points_season'] = self._expanding_round_feature(
+            df, 'total_points', 'cumsum')
 
         # Games played so far (minutes > 0), shifted
-        df['games_played_season'] = g['minutes'].transform(
-            lambda x: (x > 0).shift(1).cumsum())
+        df['games_played_season'] = self._expanding_round_feature(
+            df, 'minutes', 'count_positive')
 
         # --- Selection percentage (log-scaled) ---
         if 'selected' in df.columns:
             df['selected_pct'] = np.log1p(df['selected'])
 
         # --- Minutes last 5 (useful for XGBoost too) ---
-        df['minutes_last_5'] = g['minutes'].transform(
-            lambda x: _shifted_rolling_mean(x, 5))
+        df['minutes_last_5'] = self._round_feature(df, 'minutes', 5)
 
         return df
 
@@ -161,19 +253,19 @@ class FPLFeatureEngineer:
           form_momentum         — form_last_3 minus form_last_5 (positive = improving)
         """
         df = df.copy()
-        g = df.groupby(self._group_key(df))
-
         # ── 1. Season-best form streaks ───────────────────────────────────────
         # For each GW N, what was the best 3-game consecutive sum up to GW N-1?
         # Uses shift(1) → no leakage; min_periods=window ensures full window.
-        df['best_3_streak_season'] = g['total_points'].transform(
+        df['best_3_streak_season'] = self._custom_round_feature(
+            df, 'total_points',
             lambda x: (x.shift(1)
                         .rolling(3, min_periods=3)
                         .sum()
                         .expanding()
                         .max())
         )
-        df['best_5_streak_season'] = g['total_points'].transform(
+        df['best_5_streak_season'] = self._custom_round_feature(
+            df, 'total_points',
             lambda x: (x.shift(1)
                         .rolling(5, min_periods=5)
                         .sum()
@@ -185,22 +277,26 @@ class FPLFeatureEngineer:
         # A red card in GW N-1 almost always means suspension in GW N.
         # clip(upper=1) turns multi-red-card edge cases into a clean 0/1 flag.
         if 'red_cards' in df.columns:
-            df['red_card_last_game'] = g['red_cards'].transform(
-                lambda x: x.shift(1).clip(upper=1).astype(float)
+            df['red_card_last_game'] = self._custom_round_feature(
+                df, 'red_cards',
+                lambda x: x.shift(1).clip(upper=1).astype(float),
             )
 
         # ── 3. Return consistency: hauler rate ────────────────────────────────
         # Expanding proportion of games this season where player scored 5+ pts.
         # min_periods=3 so the ratio is only trusted after at least 3 games.
-        df['hauler_rate_season'] = g['total_points'].transform(
-            lambda x: (x >= 5).astype(float).shift(1).expanding(min_periods=3).mean()
+        df['hauler_rate_season'] = self._custom_round_feature(
+            df, 'total_points',
+            lambda x: (x >= 5).astype(float).shift(1)
+            .expanding(min_periods=3).mean(),
         )
 
         # ── 4. Return consistency: points volatility ──────────────────────────
         # Rolling std over last 10 GWs. High std = streaky/volatile player.
         # Combine with hauler_rate to distinguish consistent haulers vs flukes.
-        df['points_std_last_10'] = g['total_points'].transform(
-            lambda x: x.shift(1).rolling(10, min_periods=3).std()
+        df['points_std_last_10'] = self._custom_round_feature(
+            df, 'total_points',
+            lambda x: x.shift(1).rolling(10, min_periods=3).std(),
         )
 
         # ── 5. Form momentum (derived from Tier 1 features) ───────────────────
@@ -243,6 +339,7 @@ class FPLFeatureEngineer:
                     # Home team faces away-team difficulty
                     if 'team_h' in row and 'team_h_difficulty' in row:
                         fdr_records.append({
+                            'fixture': row.get('id'),
                             'team': int(row['team_h']),
                             'round': gw,
                             'opponent_difficulty': row['team_h_difficulty']
@@ -250,6 +347,7 @@ class FPLFeatureEngineer:
                     # Away team faces home-team difficulty
                     if 'team_a' in row and 'team_a_difficulty' in row:
                         fdr_records.append({
+                            'fixture': row.get('id'),
                             'team': int(row['team_a']),
                             'round': gw,
                             'opponent_difficulty': row['team_a_difficulty']
@@ -257,24 +355,40 @@ class FPLFeatureEngineer:
 
             if fdr_records:
                 fdr_df = pd.DataFrame(fdr_records)
-                # Handle double GWs: take max difficulty
-                fdr_df = fdr_df.groupby(['team', 'round'], as_index=False)['opponent_difficulty'].max()
+                df = df.drop(columns=['opponent_difficulty'], errors='ignore')
 
-                # Merge FDR into main df via the player's team and round
-                if 'team' in df.columns:
-                    # Need to get team from the data - in merged_gw.csv, 'team' might
-                    # be 0 (broken), so use opponent_team with was_home to infer
-                    pass  # team column should be valid after our loader fixes
+                # Fixture IDs preserve distinct FDR values in double gameweeks.
+                if 'fixture' in df.columns and fdr_df['fixture'].notna().any():
+                    fixture_fdr = (
+                        fdr_df.dropna(subset=['fixture'])
+                        .drop_duplicates(['fixture', 'team'])
+                    )
+                    df = df.merge(
+                        fixture_fdr[
+                            ['fixture', 'team', 'opponent_difficulty']],
+                        on=['fixture', 'team'],
+                        how='left',
+                    )
 
-                df = df.merge(
-                    fdr_df.rename(columns={'team': '_team_fdr', 'round': '_round_fdr'}),
-                    left_on=['team', 'round'],
-                    right_on=['_team_fdr', '_round_fdr'],
-                    how='left',
-                    suffixes=('', '_fdr')
-                )
-                # Clean up merge columns
-                df = df.drop(columns=['_team_fdr', '_round_fdr'], errors='ignore')
+                # Historical files without fixture IDs use a conservative
+                # player-team/gameweek fallback.
+                if ('opponent_difficulty' not in df.columns
+                        or df['opponent_difficulty'].isna().any()):
+                    round_fdr = (
+                        fdr_df.groupby(['team', 'round'], as_index=False)
+                        ['opponent_difficulty'].max()
+                        .rename(columns={
+                            'opponent_difficulty': '_round_difficulty'})
+                    )
+                    df = df.merge(round_fdr, on=['team', 'round'], how='left')
+                    if 'opponent_difficulty' not in df.columns:
+                        df['opponent_difficulty'] = df['_round_difficulty']
+                    else:
+                        df['opponent_difficulty'] = (
+                            df['opponent_difficulty']
+                            .fillna(df['_round_difficulty'])
+                        )
+                    df = df.drop(columns=['_round_difficulty'])
         elif 'opponent_team' in df.columns and 'opponent_strength' in df.columns:
             # Fallback: use opponent strength as difficulty proxy
             if 'opponent_difficulty' not in df.columns:
@@ -302,8 +416,8 @@ class FPLFeatureEngineer:
         """
         # Sort by season (if present) then element then round.
         # Season must come before round to prevent cross-season interleaving.
-        sort_cols = (['element', 'season', 'round'] if 'season' in df.columns
-                     else ['element', 'round'])
+        sort_cols = (['season', 'element', 'round']
+                     if 'season' in df.columns else ['element', 'round'])
         df = df.sort_values(sort_cols).reset_index(drop=True)
 
         print("  Creating Tier 1 (baseline) features...")

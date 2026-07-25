@@ -21,7 +21,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 from configs.config import PROCESSED_DATA_DIR, MODELS_DIR
 from src.preprocessing.data_loader import FPLDataLoader
 from src.preprocessing.feature_engineering import (
-    FPLFeatureEngineer, TIER1_FEATURES, TIER2_FEATURES,
+    FPLFeatureEngineer, TIER1_FEATURES, TIER2_FEATURES, TIER3_FEATURES,
     prepare_training_data
 )
 
@@ -69,9 +69,22 @@ class FPLPreprocessor:
         print(f"   Test records: {len(test_df):,}")
 
         # --- Select features ---
-        feature_list = TIER1_FEATURES if tier == 1 else TIER2_FEATURES
-        available_features = [f for f in feature_list if f in train_df.columns]
-        missing_features = [f for f in feature_list if f not in train_df.columns]
+        feature_lists = {
+            1: TIER1_FEATURES,
+            2: TIER2_FEATURES,
+            3: TIER3_FEATURES,
+        }
+        if tier not in feature_lists:
+            raise ValueError('tier must be 1, 2, or 3')
+        feature_list = feature_lists[tier]
+        available_features = [
+            feature for feature in feature_list
+            if feature in train_df.columns and feature in test_df.columns
+        ]
+        missing_features = [
+            feature for feature in feature_list
+            if feature not in available_features
+        ]
 
         if missing_features:
             print(f"\n   Warning: Missing features: {missing_features}")
@@ -138,41 +151,43 @@ class FPLPreprocessor:
         return X_train_scaled, X_test_scaled
 
     def _load_and_engineer(self, seasons: List[str], tier: int) -> pd.DataFrame:
-        """Load raw data for seasons and run feature engineering."""
-        # Load combined gameweek data
-        gw_df = self.loader.load_multi_season(seasons)
+        """Engineer every season with its own teams and fixtures."""
+        engineered = []
+        for season in seasons:
+            try:
+                gw_df = self.loader.load_gameweeks(season)
+            except FileNotFoundError:
+                print(f'   Skipping {season} (not found)')
+                continue
+            gw_df['season'] = season
+            teams_df = self.loader.load_teams(season)
+            try:
+                fixtures_df = self.loader.load_fixtures(season)
+            except FileNotFoundError:
+                fixtures_df = None
 
-        # For each season, load teams and fixtures for opponent features
-        # Use the last season's teams/fixtures as representative
-        last_season = seasons[-1]
-        teams_df = self.loader.load_teams(last_season)
-        try:
-            fixtures_df = self.loader.load_fixtures(last_season)
-        except FileNotFoundError:
-            fixtures_df = None
-
-        # Fix team column if it's 0 (broken in some merged_gw.csv files)
-        if 'team' in gw_df.columns and (gw_df['team'] == 0).mean() > 0.5:
-            print("   Warning: 'team' column is mostly 0, attempting to fix...")
-            # Try to infer team from player data
-            for season in seasons:
+            if ('team' in gw_df.columns
+                    and (gw_df['team'].fillna(0) == 0).mean() > 0.5):
+                print(f'   Fixing missing team IDs for {season}...')
                 try:
                     players_df = self.loader.load_players(season)
                     if 'id' in players_df.columns and 'team' in players_df.columns:
                         team_map = players_df.set_index('id')['team'].to_dict()
-                        mask = gw_df['season'] == season
-                        gw_df.loc[mask, 'team'] = gw_df.loc[mask, 'element'].map(team_map)
-                        print(f"   Fixed team IDs for {season} using players data")
+                        gw_df['team'] = gw_df['element'].map(team_map)
                 except FileNotFoundError:
                     pass
 
-        # Run feature engineering
-        print(f"   Engineering features (Tier {tier})...")
-        df = self.engineer.create_all_features(
-            gw_df, teams_df=teams_df, fixtures_df=fixtures_df, tier=tier
-        )
+            print(f'   Engineering {season} features (Tier {tier})...')
+            engineered.append(self.engineer.create_all_features(
+                gw_df,
+                teams_df=teams_df,
+                fixtures_df=fixtures_df,
+                tier=tier,
+            ))
 
-        return df
+        if not engineered:
+            raise ValueError('No season data could be loaded')
+        return pd.concat(engineered, ignore_index=True, sort=False)
 
     def save(self, data: Dict, name: str = 'default'):
         """Save processed datasets and pipeline."""

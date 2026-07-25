@@ -9,8 +9,8 @@ xgboost>=2.0.0
 lightgbm>=4.1.0
 catboost>=1.2.0
 
-# Deep Learning (optional, comment out if not needed)
-# torch>=2.0.0
+# Deep Learning (required by src.models and notebook 03)
+torch>=2.0.0
 # tensorflow>=2.13.0
 
 # Data visualization

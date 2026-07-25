@@ -123,17 +123,15 @@ def _enrich_with_player_info(gw_df: pd.DataFrame, season: str) -> pd.DataFrame:
     meta["position_label"] = meta["element_type"].map(POSITION_MAP)
     meta["team"] = pd.to_numeric(meta["team"], errors="coerce")
 
-    # Only add columns that are genuinely missing
-    add_cols = [c for c in ["name", "position_label", "element_type", "team"]
-                if c not in gw_df.columns]
-    if not add_cols:
-        return gw_df
-
-    return gw_df.merge(
-        meta[["element"] + add_cols],
-        on="element",
-        how="left",
-    )
+    result = gw_df.merge(meta, on='element', how='left', suffixes=('', '_meta'))
+    for column in ['name', 'position_label', 'element_type', 'team']:
+        meta_column = f'{column}_meta'
+        if column not in result.columns and meta_column in result.columns:
+            result[column] = result[meta_column]
+        elif meta_column in result.columns:
+            result[column] = result[column].fillna(result[meta_column])
+        result = result.drop(columns=[meta_column], errors='ignore')
+    return result
 
 
 def _load_and_engineer_season(
@@ -291,34 +289,61 @@ def train_model(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def get_current_player_state(feat_list: List[str]) -> pd.DataFrame:
-    """Return the latest engineered feature row for each player in 2025-26.
-
-    The rolling / form features in this row represent the player's state
-    *going into* the next gameweek and will be held constant across all
-    5 future GW predictions (only was_home / opponent features change).
-    """
+    """Build a leakage-safe snapshot after the latest completed gameweek."""
     print("\n  Extracting current player state from 2025-26 data…")
 
     loader   = FPLDataLoader()
     engineer = FPLFeatureEngineer()
 
-    df = _load_and_engineer_season(loader, engineer, CURRENT_SEASON, tier=3)
-    if df is None or df.empty:
+    try:
+        raw = loader.load_gameweeks(CURRENT_SEASON)
+    except FileNotFoundError:
+        return pd.DataFrame()
+    if raw.empty:
         return pd.DataFrame()
 
-    # Keep only rows where the player actually played (minutes > 0) so that
-    # the last row reflects real form, not a DNP bench appearance
-    if "minutes" in df.columns:
-        played = df[df["minutes"] > 0].copy()
-        # If some players only ever played 0 mins, keep their latest row anyway
-        never_played_ids = set(df["element"].unique()) - set(played["element"].unique())
-        if never_played_ids:
-            fallback = df[df["element"].isin(never_played_ids)].copy()
-            played = pd.concat([played, fallback], ignore_index=True)
-        df = played
+    raw = _enrich_with_player_info(raw, CURRENT_SEASON)
+    raw['season'] = CURRENT_SEASON
+    sort_columns = ['element', 'round']
+    if 'kickoff_time' in raw.columns:
+        sort_columns.append('kickoff_time')
+    raw = raw.sort_values(sort_columns, na_position='last')
 
-    df = df.sort_values(["element", "round"])
-    latest = df.groupby("element").last().reset_index()
+    # A synthetic next-round row makes every shift(1) feature include the
+    # latest actual fixture and every DNP, without using a future target.
+    snapshot = raw.groupby('element', as_index=False).tail(1).copy()
+    snapshot['round'] = int(raw['round'].max()) + 1
+    snapshot['_is_snapshot'] = True
+    performance_columns = [
+        'total_points', 'minutes', 'goals_scored', 'assists',
+        'clean_sheets', 'goals_conceded', 'own_goals',
+        'penalties_saved', 'penalties_missed', 'yellow_cards',
+        'red_cards', 'saves', 'bonus', 'bps', 'influence',
+        'creativity', 'threat', 'ict_index', 'expected_goals',
+        'expected_assists', 'expected_goal_involvements',
+        'expected_goals_conceded', 'xP',
+    ]
+    for column in performance_columns:
+        if column in snapshot.columns:
+            snapshot[column] = np.nan
+    for column in ['fixture', 'opponent_team', 'kickoff_time']:
+        if column in snapshot.columns:
+            snapshot[column] = np.nan
+    raw['_is_snapshot'] = False
+    combined = pd.concat([raw, snapshot], ignore_index=True, sort=False)
+
+    try:
+        teams_df = loader.load_teams(CURRENT_SEASON)
+    except FileNotFoundError:
+        teams_df = None
+    try:
+        fixtures_df = loader.load_fixtures(CURRENT_SEASON)
+    except FileNotFoundError:
+        fixtures_df = None
+    engineered = engineer.create_all_features(
+        combined, teams_df=teams_df, fixtures_df=fixtures_df, tier=3)
+    latest = engineered[engineered['_is_snapshot']].copy()
+    latest = latest.drop(columns=['_is_snapshot'], errors='ignore')
 
     print(f"  ✓ {len(latest)} players with current state")
     return latest
@@ -357,12 +382,12 @@ def _get_upcoming_gws(n: int = N_FUTURE_GW) -> List[int]:
 def _build_fixture_lookup(
     fixtures_df: pd.DataFrame,
     upcoming_gws: List[int],
-) -> Dict[int, Dict[int, List[Tuple[int, float, int]]]]:
+) -> Dict[int, Dict[int, List[Tuple[int, float, int, int]]]]:
     """Build a nested lookup:  team_id -> gw -> [(opponent_id, fdr, was_home)].
 
     For double-gameweek teams, the inner list has two entries.
     """
-    lookup: Dict[int, Dict[int, List[Tuple[int, float, int]]]] = {}
+    lookup: Dict[int, Dict[int, List[Tuple[int, float, int, int]]]] = {}
     if fixtures_df.empty or "event" not in fixtures_df.columns:
         return lookup
 
@@ -378,16 +403,19 @@ def _build_fixture_lookup(
         team_a = row.get("team_a")
         fdr_h  = float(row.get("team_h_difficulty", 3) or 3)
         fdr_a  = float(row.get("team_a_difficulty", 3) or 3)
+        fixture_id = int(row['id']) if pd.notna(row.get('id')) else 0
 
         if pd.notna(team_h):
             tid = int(team_h)
             opp = int(team_a) if pd.notna(team_a) else 0
-            lookup.setdefault(tid, {}).setdefault(gw, []).append((opp, fdr_h, 1))
+            lookup.setdefault(tid, {}).setdefault(gw, []).append(
+                (opp, fdr_h, 1, fixture_id))
 
         if pd.notna(team_a):
             tid = int(team_a)
             opp = int(team_h) if pd.notna(team_h) else 0
-            lookup.setdefault(tid, {}).setdefault(gw, []).append((opp, fdr_a, 0))
+            lookup.setdefault(tid, {}).setdefault(gw, []).append(
+                (opp, fdr_a, 0, fixture_id))
 
     return lookup
 
@@ -454,11 +482,12 @@ def build_prediction_rows(
                 row = {**base, "element": pid, "gw": gw, "has_fixture": False}
                 rows.append(row)
             else:
-                for opp_id, fdr, is_home in fixtures_in_gw:
+                for opp_id, fdr, is_home, fixture_id in fixtures_in_gw:
                     row = {**base, "element": pid, "gw": gw, "has_fixture": True}
                     row["was_home"]            = float(is_home)
                     row["opponent_difficulty"] = fdr
                     row["opponent_team"]       = opp_id
+                    row['fixture']              = fixture_id
                     row["opponent_strength"]   = float(
                         team_strength_map.get(opp_id, 3)
                     )
@@ -528,8 +557,9 @@ def save_predictions(pred_df: pd.DataFrame, upcoming_gws: List[int]) -> Path:
     fname    = f"predictions_gw{gw0}_to_gw{gwN}.csv"
     out_path = PREDICTION_DIR / fname
 
-    keep = ["element", "name", "position_label", "team", "gw",
-            "predicted_points", "was_home", "opponent_difficulty", "has_fixture"]
+    keep = ["element", "name", "position_label", "team", "gw", 'fixture',
+            'opponent_team', "predicted_points", "was_home",
+            "opponent_difficulty", "has_fixture"]
     keep = [c for c in keep if c in pred_df.columns]
 
     pred_df[keep].sort_values(

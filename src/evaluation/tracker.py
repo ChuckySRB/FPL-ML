@@ -39,11 +39,17 @@ CATEGORIES = ['Zeros', 'Blanks', 'Tickers', 'Haulers']
 POSITIONS  = ['GK', 'DEF', 'MID', 'FWD']
 
 
-def _get_category(pts: float) -> str:
-    if pts == 0:    return 'Zeros'
-    elif pts <= 2:  return 'Blanks'
-    elif pts <= 4:  return 'Tickers'
-    else:           return 'Haulers'
+def _get_category(pts: float, minutes: float = None) -> str:
+    '''Return the OpenFPL category for one observed player-fixture.'''
+    if minutes is not None and minutes == 0 and pts == 0:
+        return 'Zeros'
+    if minutes is None and pts == 0:
+        return 'Zeros'
+    if pts <= 2:
+        return 'Blanks'
+    if pts <= 4:
+        return 'Tickers'
+    return 'Haulers'
 
 
 def _rmse(y_true, y_pred) -> float:
@@ -55,7 +61,8 @@ def _mae(y_true, y_pred) -> float:
 
 
 def _compute_metrics(y_true: np.ndarray, y_pred: np.ndarray,
-                     positions: np.ndarray) -> dict:
+                     positions: np.ndarray,
+                     minutes: np.ndarray = None) -> dict:
     """Compute full metrics: overall, by category, by position."""
     metrics = {
         'overall_rmse': _rmse(y_true, y_pred),
@@ -63,7 +70,13 @@ def _compute_metrics(y_true: np.ndarray, y_pred: np.ndarray,
         'n_test':       int(len(y_true)),
     }
 
-    cats = np.array([_get_category(p) for p in y_true])
+    if minutes is None:
+        cats = np.array([_get_category(points) for points in y_true])
+    else:
+        cats = np.array([
+            _get_category(points, played_minutes)
+            for points, played_minutes in zip(y_true, minutes)
+        ])
     for cat in CATEGORIES:
         mask = cats == cat
         if mask.sum() > 0:
@@ -105,7 +118,8 @@ class ExperimentTracker:
             y_true,
             y_pred,
             positions,
-            config: dict = None) -> dict:
+            config: dict = None,
+            minutes=None) -> dict:
         """Log a model run.
 
         Args:
@@ -123,6 +137,13 @@ class ExperimentTracker:
         y_true = np.array(y_true, dtype=float)
         y_pred = np.array(y_pred, dtype=float)
         positions = np.array(positions, dtype=str)
+        minutes = (None if minutes is None
+                   else np.array(minutes, dtype=float))
+        lengths = [len(y_true), len(y_pred), len(positions)]
+        if minutes is not None:
+            lengths.append(len(minutes))
+        if len(set(lengths)) != 1:
+            raise ValueError('y_true, y_pred, positions, and minutes must align')
 
         run = {
             'run_id':    _next_run_id(self.runs_file),
@@ -133,13 +154,14 @@ class ExperimentTracker:
         # Merge in user config
         if config:
             # Flatten params dict into the record for easy tabular display
+            config = dict(config)
             params = config.pop('params', {})
             run.update(config)
             if params:
                 run['params'] = params
 
         # Compute and merge metrics
-        run.update(_compute_metrics(y_true, y_pred, positions))
+        run.update(_compute_metrics(y_true, y_pred, positions, minutes))
 
         # Append to file
         with open(self.runs_file, 'a', encoding='utf-8') as f:

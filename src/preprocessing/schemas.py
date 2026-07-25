@@ -236,7 +236,6 @@ def validate_gameweek_data(df: pd.DataFrame) -> tuple:
     Returns:
         tuple: (is_valid, list of issues)
     """
-    return True, []  # Placeholder for validation logic
     issues = []
 
     # Check required columns
@@ -259,13 +258,20 @@ def validate_gameweek_data(df: pd.DataFrame) -> tuple:
         if not pd.api.types.is_numeric_dtype(df['total_points']):
             issues.append("'total_points' should be numeric")
 
-    # Check for duplicate player-gameweek combinations
+    # Double gameweeks legitimately have multiple fixture rows. Exact
+    # player-fixture duplicates do not.
     if 'element' in df.columns and 'round' in df.columns:
         try:
-            duplicates = df.duplicated(subset=['element', 'round'], keep=False)
+            duplicate_keys = ['element', 'round']
+            duplicate_label = 'player-gameweek'
+            if 'fixture' in df.columns:
+                duplicate_keys.append('fixture')
+                duplicate_label = 'player-fixture'
+            duplicates = df.duplicated(subset=duplicate_keys, keep=False)
             if duplicates.any():
                 dup_count = int(duplicates.sum())
-                issues.append(f"Found {dup_count} duplicate player-gameweek combinations")
+                issues.append(
+                    f'Found {dup_count} duplicate {duplicate_label} combinations')
         except Exception:
             # Skip duplicate check if it fails
             pass

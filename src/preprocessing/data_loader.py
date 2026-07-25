@@ -173,10 +173,14 @@ class FPLDataLoader:
             result['players'] = None
         return result
 
-    def load_multi_season(self, seasons: List[str]) -> pd.DataFrame:
+    def load_multi_season(
+            self, seasons: List[str],
+            aggregate_double_gameweeks: bool = False) -> pd.DataFrame:
         """Load and combine gameweek data across multiple seasons.
 
-        Handles double gameweeks by aggregating duplicate player-round entries.
+        Player-fixture rows are preserved by default, matching OpenFPL's unit
+        of analysis. Set ``aggregate_double_gameweeks`` to opt into one row per
+        player-gameweek.
         """
         all_data = []
         for season in seasons:
@@ -202,7 +206,7 @@ class FPLDataLoader:
         duplicates = combined.duplicated(subset=group_cols, keep=False)
         n_dups = duplicates.sum()
 
-        if n_dups > 0:
+        if n_dups > 0 and aggregate_double_gameweeks:
             print(f"\n  Found {n_dups} double-GW records, aggregating...")
 
             # Columns to sum (match stats)
@@ -220,7 +224,8 @@ class FPLDataLoader:
 
             # Columns to take first (metadata)
             first_cols = ['name', 'position', 'position_label', 'element_type',
-                         'team', 'value', 'was_home', 'opponent_team',
+                         'team', 'team_name', 'value', 'was_home',
+                         'opponent_team',
                          'selected', 'transfers_in', 'transfers_out',
                          'transfers_balance', 'kickoff_time', 'fixture', 'starts']
             first_cols = [c for c in first_cols if c in combined.columns]
@@ -236,15 +241,66 @@ class FPLDataLoader:
             combined = combined.groupby(group_cols, as_index=False).agg(agg_dict)
             print(f"  After aggregation: {len(combined):,} records")
 
-        print(f"\nTotal: {len(combined):,} player-gameweek records")
+        unit = ('player-gameweek' if aggregate_double_gameweeks
+                else 'player-fixture')
+        print(f'\nTotal: {len(combined):,} {unit} records')
         return combined
 
     def get_available_seasons(self) -> List[str]:
         """Get list of seasons with available data"""
         if not self.data_dir.exists():
             return []
-        return sorted([d.name for d in self.data_dir.iterdir()
-                       if d.is_dir() and '-' in d.name])
+        seasons = []
+        for directory in self.data_dir.iterdir():
+            if not directory.is_dir() or '-' not in directory.name:
+                continue
+            recognized = [
+                directory / 'gws' / 'merged_gw.csv',
+                directory / 'players_raw.csv',
+                directory / 'cleaned_players.csv',
+                directory / 'teams.csv',
+            ]
+            has_gw_files = ((directory / 'gws').is_dir()
+                            and any((directory / 'gws').glob('gw*.csv')))
+            if any(path.exists() for path in recognized) or has_gw_files:
+                seasons.append(directory.name)
+        return sorted(seasons)
+
+    def get_data_summary(self, season: str) -> dict:
+        '''Return a compact offline summary for verification scripts.'''
+        gameweeks = self.load_gameweeks(season)
+        season_dir = self.data_dir / season
+        candidate_files = {
+            'players': next((path for path in [
+                season_dir / 'players_raw.csv',
+                season_dir / 'cleaned_players.csv',
+            ] if path.exists()), None),
+            'teams': season_dir / 'teams.csv',
+            'fixtures': season_dir / 'fixtures.csv',
+            'merged_gw': season_dir / 'gws' / 'merged_gw.csv',
+        }
+        files = {
+            name: str(path) for name, path in candidate_files.items()
+            if path is not None and path.exists()
+        }
+        try:
+            players_count = len(self.load_players(season))
+        except FileNotFoundError:
+            players_count = int(gameweeks['element'].nunique())
+        try:
+            teams_count = len(self.load_teams(season))
+        except FileNotFoundError:
+            teams_count = 0
+        return {
+            'season': season,
+            'records': len(gameweeks),
+            'files': files,
+            'players': players_count,
+            'teams': teams_count,
+            'gameweeks': (int(gameweeks['round'].nunique())
+                          if 'round' in gameweeks else 0),
+            'columns': list(gameweeks.columns),
+        }
 
 
 def quick_load(season: str = '2023-24', data_type: str = 'gameweeks') -> pd.DataFrame:

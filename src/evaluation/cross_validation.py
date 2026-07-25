@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 from typing import Iterator, Tuple, List, Dict, Optional
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.base import clone
 
 
 # ─────────────────────────────────────────────────────────────
@@ -53,7 +54,7 @@ class TeamStratifiedKFold:
     def split(
         self,
         df: pd.DataFrame,
-        team_col: str = 'team',
+        team_col: str = 'team_name',
         points_col: str = 'total_points',
     ) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
         """
@@ -74,6 +75,14 @@ class TeamStratifiedKFold:
         """
         rng = np.random.RandomState(self.random_state)
 
+        if team_col not in df.columns:
+            if team_col == 'team_name' and 'team' in df.columns:
+                team_col = 'team'
+            else:
+                raise ValueError(f'Missing team column: {team_col}')
+        if points_col not in df.columns:
+            raise ValueError(f'Missing points column: {points_col}')
+
         # Rank teams by mean points — best team first
         team_avg = (
             df.groupby(team_col)[points_col]
@@ -82,6 +91,9 @@ class TeamStratifiedKFold:
         )
         teams_ranked = team_avg.index.values
         n_teams = len(teams_ranked)
+        if n_teams < self.n_splits:
+            raise ValueError(
+                f'Need at least {self.n_splits} teams; found {n_teams}')
 
         # Upper half = stronger teams, lower half = weaker teams
         upper = teams_ranked[: n_teams // 2].copy()
@@ -94,7 +106,7 @@ class TeamStratifiedKFold:
         for i, t in enumerate(upper):
             fold_of[t] = i % self.n_splits
         for i, t in enumerate(lower):
-            fold_of[t] = i % self.n_splits
+            fold_of[t] = (i + len(upper)) % self.n_splits
 
         team_fold = df[team_col].map(fold_of).values
         all_idx = np.arange(len(df))
@@ -103,6 +115,8 @@ class TeamStratifiedKFold:
             val_mask = team_fold == fold_id
             train_idx = all_idx[~val_mask]
             val_idx   = all_idx[val_mask]
+            if len(train_idx) == 0 or len(val_idx) == 0:
+                raise ValueError(f'Fold {fold_id + 1} is empty')
             yield train_idx, val_idx
 
     def get_n_splits(self) -> int:
@@ -111,7 +125,7 @@ class TeamStratifiedKFold:
     def fold_team_table(
         self,
         df: pd.DataFrame,
-        team_col: str = 'team',
+        team_col: str = 'team_name',
         team_name_col: Optional[str] = None,
     ) -> pd.DataFrame:
         """
@@ -145,7 +159,8 @@ class TeamStratifiedKFold:
             rows.append({'team': t, 'half': 'upper', 'fold': i % self.n_splits,
                          'avg_pts': float(team_avg[t])})
         for i, t in enumerate(lower):
-            rows.append({'team': t, 'half': 'lower', 'fold': i % self.n_splits,
+            rows.append({'team': t, 'half': 'lower',
+                         'fold': (i + len(upper)) % self.n_splits,
                          'avg_pts': float(team_avg[t])})
 
         result = pd.DataFrame(rows).sort_values(['fold', 'half']).reset_index(drop=True)
@@ -161,14 +176,17 @@ class TeamStratifiedKFold:
 # CROSS-VALIDATION RUNNER
 # ─────────────────────────────────────────────────────────────
 
-_CATEGORIES = {
-    'Zeros':   lambda y: y == 0,
-    'Blanks':  lambda y: (y >= 1) & (y <= 2),
-    'Tickers': lambda y: (y >= 3) & (y <= 4),
-    'Haulers': lambda y: y >= 5,
-}
-
 _POSITIONS = ['GK', 'DEF', 'MID', 'FWD']
+
+
+def balanced_return_weights(y, power: float = 1.0) -> np.ndarray:
+    '''Return finite, strictly positive weights for rare high returns.'''
+    values = np.asarray(y, dtype=float)
+    weights = np.power(np.clip(values, 0, None) + 1.0, power)
+    mean_weight = weights.mean()
+    if not np.isfinite(mean_weight) or mean_weight <= 0:
+        raise ValueError('Cannot calculate valid sample weights')
+    return weights / mean_weight
 
 
 def cross_validate(
@@ -178,7 +196,7 @@ def cross_validate(
     full_df: pd.DataFrame,
     cv: TeamStratifiedKFold,
     positions_col: str = 'position_label',
-    team_col: str = 'team',
+    team_col: str = 'team_name',
     sample_weight_fn=None,
     verbose: bool = True,
 ) -> Dict:
@@ -227,6 +245,8 @@ def cross_validate(
     """
     X_np = X.values if hasattr(X, 'values') else np.asarray(X)
     y_np = y.values if hasattr(y, 'values') else np.asarray(y)
+    if not (len(X_np) == len(y_np) == len(full_df)):
+        raise ValueError('X, y, and full_df must have identical row counts')
 
     oof_preds = np.full(len(X_np), np.nan)
     fold_metrics: List[Dict] = []
@@ -242,8 +262,13 @@ def cross_validate(
         if sample_weight_fn is not None:
             fit_kwargs['sample_weight'] = sample_weight_fn(y_tr)
 
-        model.fit(X_tr, y_tr, **fit_kwargs)
-        preds = model.predict(X_val)
+        try:
+            fold_model = clone(model)
+        except (TypeError, AttributeError):
+            import copy
+            fold_model = copy.deepcopy(model)
+        fold_model.fit(X_tr, y_tr, **fit_kwargs)
+        preds = fold_model.predict(X_val)
         oof_preds[val_idx] = preds
 
         mae  = mean_absolute_error(y_val, preds)
@@ -270,8 +295,18 @@ def cross_validate(
 
     # ── Category breakdown ───────────────────────────────────────────────
     category_mae = {}
-    for cat, mask_fn in _CATEGORIES.items():
-        mask = mask_fn(y_np) & valid
+    minutes = (full_df['minutes'].to_numpy()
+               if 'minutes' in full_df.columns else None)
+    zero_mask = ((minutes == 0) & (y_np == 0)
+                 if minutes is not None else y_np == 0)
+    category_masks = {
+        'Zeros': zero_mask,
+        'Blanks': (~zero_mask) & (y_np <= 2),
+        'Tickers': (y_np >= 3) & (y_np <= 4),
+        'Haulers': y_np >= 5,
+    }
+    for cat, category_mask in category_masks.items():
+        mask = category_mask & valid
         if mask.sum() > 0:
             category_mae[cat] = float(mean_absolute_error(y_np[mask], oof_preds[mask]))
 
