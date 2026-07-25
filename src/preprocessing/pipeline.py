@@ -4,7 +4,7 @@ Preprocessing pipeline for FPL ML models.
 Handles:
 - Multi-season data loading + feature engineering
 - Train/test split (by season or temporal)
-- Feature selection (Tier 1 vs Tier 2)
+- Feature selection (Tier 0 through Tier 3)
 - Scaling for Linear Regression
 - Saving processed datasets
 """
@@ -21,7 +21,8 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 from configs.config import PROCESSED_DATA_DIR, MODELS_DIR
 from src.preprocessing.data_loader import FPLDataLoader
 from src.preprocessing.feature_engineering import (
-    FPLFeatureEngineer, TIER1_FEATURES, TIER2_FEATURES, TIER3_FEATURES,
+    FPLFeatureEngineer, TIER0_FEATURES, TIER1_FEATURES, TIER2_FEATURES,
+    TIER3_FEATURES,
     prepare_training_data
 )
 
@@ -46,7 +47,8 @@ class FPLPreprocessor:
         Args:
             train_seasons: Seasons to use for training (e.g., ['2022-23'])
             test_season: Season to use for testing (e.g., '2023-24')
-            tier: Feature tier (1=baseline, 2=full)
+            tier: Feature tier (0=heuristic, 1=baseline, 2=extended,
+                3=advanced)
             min_gw: Minimum GW to include per season
 
         Returns:
@@ -70,12 +72,13 @@ class FPLPreprocessor:
 
         # --- Select features ---
         feature_lists = {
+            0: TIER0_FEATURES,
             1: TIER1_FEATURES,
             2: TIER2_FEATURES,
             3: TIER3_FEATURES,
         }
         if tier not in feature_lists:
-            raise ValueError('tier must be 1, 2, or 3')
+            raise ValueError('tier must be 0, 1, 2, or 3')
         feature_list = feature_lists[tier]
         available_features = [
             feature for feature in feature_list

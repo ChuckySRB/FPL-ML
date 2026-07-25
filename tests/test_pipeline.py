@@ -4,6 +4,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
+from src.baselines import Tier0FormModel
 from src.evaluation.cross_validation import (
     TeamStratifiedKFold,
     balanced_return_weights,
@@ -75,6 +76,19 @@ class FeatureEngineeringTests(unittest.TestCase):
 
 
 class ValidationAndEvaluationTests(unittest.TestCase):
+    def test_tier0_form_model_applies_fixture_adjustment(self):
+        features = pd.DataFrame({
+            'form_last_5': [4.0, 4.0, 4.0, np.nan],
+            'opponent_difficulty': [2, 3, 4, np.nan],
+        })
+        model = Tier0FormModel().fit(features)
+        predictions = model.predict(features)
+        np.testing.assert_allclose(predictions, [5.0, 4.0, 3.0, 0.0])
+
+    def test_tier0_form_model_requires_both_inputs(self):
+        with self.assertRaisesRegex(ValueError, 'opponent_difficulty'):
+            Tier0FormModel().fit(pd.DataFrame({'form_last_5': [3.0]}))
+
     def test_schema_rejects_missing_columns(self):
         valid, issues = validate_gameweek_data(pd.DataFrame({'element': [1]}))
         self.assertFalse(valid)

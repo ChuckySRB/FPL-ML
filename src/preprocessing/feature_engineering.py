@@ -450,6 +450,12 @@ class FPLFeatureEngineer:
 
 # --- Feature name lists for model building ---
 
+TIER0_FEATURES = [
+    # Transparent baseline: recent form plus a fixed fixture adjustment.
+    'form_last_5',
+    'opponent_difficulty',
+]
+
 TIER1_FEATURES = [
     'form_last_3', 'form_last_5', 'minutes_last_3',
     'was_home', 'opponent_difficulty',
