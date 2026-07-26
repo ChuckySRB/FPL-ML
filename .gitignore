@@ -168,6 +168,8 @@ models/*
 outputs/logs/*
 outputs/figures/*
 outputs/results/*
+outputs/assistant/*
+!outputs/assistant/.gitkeep
 !outputs/logs/.gitkeep
 !outputs/figures/.gitkeep
 !outputs/results/.gitkeep

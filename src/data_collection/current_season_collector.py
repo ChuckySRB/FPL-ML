@@ -41,6 +41,26 @@ class CurrentSeasonCollector:
         self.players_dir = self.season_dir / 'players'
         self.players_dir.mkdir(parents=True, exist_ok=True)
 
+    def _validate_bootstrap_season(self, data):
+        """Refuse to label API data as the wrong FPL season."""
+        events = data.get('events', [])
+        if not events:
+            raise ValueError('FPL API returned no gameweek events')
+        deadlines = pd.to_datetime(
+            [event.get('deadline_time') for event in events],
+            errors='coerce',
+            utc=True,
+        )
+        first_deadline = deadlines[~pd.isna(deadlines)].min()
+        if pd.isna(first_deadline):
+            raise ValueError('FPL API events do not contain valid deadlines')
+        expected_year = int(self.season.split('-', maxsplit=1)[0])
+        if first_deadline.year != expected_year:
+            raise ValueError(
+                f"FPL API currently serves the season starting in "
+                f"{first_deadline.year}, not {self.season}"
+            )
+
     def collect_bootstrap_data(self):
         """Collect and parse bootstrap-static data (main FPL data)
 
@@ -51,46 +71,47 @@ class CurrentSeasonCollector:
 
         try:
             data = get_data()
-            print(f"  ✓ Retrieved bootstrap data successfully")
+            self._validate_bootstrap_season(data)
+            print("  [OK] Retrieved bootstrap data successfully")
 
             # Save raw JSON
             raw_json_path = self.season_dir / 'bootstrap_static.json'
             with open(raw_json_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
-            print(f"  ✓ Saved raw JSON to {raw_json_path.name}")
+            print(f"  [OK] Saved raw JSON to {raw_json_path.name}")
 
             # Parse and save players data
             if 'elements' in data:
                 players_df = pd.DataFrame(data['elements'])
                 players_path = self.season_dir / 'players_raw.csv'
                 players_df.to_csv(players_path, index=False)
-                print(f"  ✓ Saved {len(players_df)} players to {players_path.name}")
+                print(f"  [OK] Saved {len(players_df)} players to {players_path.name}")
 
             # Parse and save teams data
             if 'teams' in data:
                 teams_df = pd.DataFrame(data['teams'])
                 teams_path = self.season_dir / 'teams.csv'
                 teams_df.to_csv(teams_path, index=False)
-                print(f"  ✓ Saved {len(teams_df)} teams to {teams_path.name}")
+                print(f"  [OK] Saved {len(teams_df)} teams to {teams_path.name}")
 
             # Parse and save gameweek data
             if 'events' in data:
                 events_df = pd.DataFrame(data['events'])
                 events_path = self.season_dir / 'events.csv'
                 events_df.to_csv(events_path, index=False)
-                print(f"  ✓ Saved {len(events_df)} gameweeks to {events_path.name}")
+                print(f"  [OK] Saved {len(events_df)} gameweeks to {events_path.name}")
 
             # Parse and save player types
             if 'element_types' in data:
                 types_df = pd.DataFrame(data['element_types'])
                 types_path = self.season_dir / 'element_types.csv'
                 types_df.to_csv(types_path, index=False)
-                print(f"  ✓ Saved {len(types_df)} player types to {types_path.name}")
+                print(f"  [OK] Saved {len(types_df)} player types to {types_path.name}")
 
             return data
 
         except Exception as e:
-            print(f"  ✗ Error collecting bootstrap data: {str(e)}")
+            print(f"  [ERROR] Error collecting bootstrap data: {str(e)}")
             return None
 
     def collect_fixtures(self):
@@ -107,12 +128,12 @@ class CurrentSeasonCollector:
 
             fixtures_path = self.season_dir / 'fixtures.csv'
             fixtures_df.to_csv(fixtures_path, index=False)
-            print(f"  ✓ Saved {len(fixtures_df)} fixtures to {fixtures_path.name}")
+            print(f"  [OK] Saved {len(fixtures_df)} fixtures to {fixtures_path.name}")
 
             return fixtures_df
 
         except Exception as e:
-            print(f"  ✗ Error collecting fixtures: {str(e)}")
+            print(f"  [ERROR] Error collecting fixtures: {str(e)}")
             return None
 
     def collect_player_details(self, player_ids=None, max_players=None):
@@ -140,7 +161,7 @@ class CurrentSeasonCollector:
         if max_players:
             player_ids = player_ids[:max_players]
 
-        print(f"  → Collecting data for {len(player_ids)} players...")
+        print(f"  -> Collecting data for {len(player_ids)} players...")
 
         success_count = 0
         failed_count = 0
@@ -177,9 +198,9 @@ class CurrentSeasonCollector:
                 failed_count += 1
                 # Don't print every error, just continue
 
-        print(f"  ✓ Successfully collected {success_count} players")
+        print(f"  [OK] Successfully collected {success_count} players")
         if failed_count > 0:
-            print(f"  ✗ Failed to collect {failed_count} players")
+            print(f"  [ERROR] Failed to collect {failed_count} players")
 
         return success_count
 
@@ -212,7 +233,7 @@ class CurrentSeasonCollector:
             merged_df = pd.concat(all_gw_data, ignore_index=True)
             merged_path = self.gws_dir / 'merged_gw.csv'
             merged_df.to_csv(merged_path, index=False)
-            print(f"  ✓ Saved merged data: {len(merged_df)} records from {len(all_gw_data)} players")
+            print(f"  [OK] Saved merged data: {len(merged_df)} records from {len(all_gw_data)} players")
             return merged_df
         else:
             print("  ! No gameweek data found to merge")
@@ -262,10 +283,10 @@ class CurrentSeasonCollector:
 
         print(f"\n{'='*60}")
         print(f"Collection Complete!")
-        print(f"  Bootstrap data: {'✓' if summary['bootstrap'] else '✗'}")
-        print(f"  Fixtures: {'✓' if summary['fixtures'] else '✗'}")
+        print(f"  Bootstrap data: {'OK' if summary['bootstrap'] else 'FAILED'}")
+        print(f"  Fixtures: {'OK' if summary['fixtures'] else 'FAILED'}")
         print(f"  Player details: {summary['players_detailed']}")
-        print(f"  Merged GW file: {'✓' if summary['merged_gw'] else '✗'}")
+        print(f"  Merged GW file: {'OK' if summary['merged_gw'] else 'FAILED'}")
         print(f"{'='*60}\n")
 
         # Save summary

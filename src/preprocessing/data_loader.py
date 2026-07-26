@@ -42,27 +42,51 @@ class FPLDataLoader:
 
         Handles the duplicate round/GW column issue and position text column.
         """
-        merged_path = self.data_dir / season / 'gws' / 'merged_gw.csv'
+        gws_dir = self.data_dir / season / 'gws'
+        merged_path = gws_dir / 'merged_gw.csv'
+        if not gws_dir.exists():
+            raise FileNotFoundError(f"Gameweek directory not found: {gws_dir}")
 
-        if merged_path.exists():
-            df = read_csv_safe(merged_path)
+        individual_files = sorted(
+            gws_dir.glob('gw*.csv'),
+            key=lambda path: int(path.stem.replace('gw', '')),
+        )
+        use_individual = gameweeks is not None or not merged_path.exists()
+        merged_df = None
+        if merged_path.exists() and not use_individual:
+            merged_df = read_csv_safe(merged_path)
+            merged_round = (
+                merged_df['round'] if 'round' in merged_df
+                else merged_df.get('GW', pd.Series(dtype=float))
+            )
+            merged_max = pd.to_numeric(merged_round, errors='coerce').max()
+            individual_max = max(
+                (int(path.stem.replace('gw', '')) for path in individual_files),
+                default=0,
+            )
+            if pd.notna(merged_max) and individual_max > int(merged_max):
+                warnings.warn(
+                    f"{season} merged_gw.csv ends at GW{int(merged_max)}; "
+                    f"loading individual files through GW{individual_max}"
+                )
+                use_individual = True
+
+        if not use_individual and merged_df is not None:
+            df = merged_df
         else:
-            # Load individual GW files
-            gws_dir = self.data_dir / season / 'gws'
-            if not gws_dir.exists():
-                raise FileNotFoundError(f"Gameweek directory not found: {gws_dir}")
-
-            gw_files = sorted(gws_dir.glob('gw*.csv'))
+            gw_files = individual_files
             if gameweeks is not None:
-                gw_files = [gws_dir / f'gw{gw}.csv' for gw in gameweeks
-                           if (gws_dir / f'gw{gw}.csv').exists()]
+                gw_files = [
+                    gws_dir / f'gw{gw}.csv' for gw in gameweeks
+                    if (gws_dir / f'gw{gw}.csv').exists()
+                ]
             if not gw_files:
                 raise FileNotFoundError(f"No gameweek files found for season {season}")
 
             dfs = []
             for gw_file in gw_files:
                 try:
-                    gw_df = pd.read_csv(gw_file)
+                    gw_df = read_csv_safe(gw_file)
                     if 'round' not in gw_df.columns and 'GW' not in gw_df.columns:
                         gw_num = int(gw_file.stem.replace('gw', ''))
                         gw_df['round'] = gw_num
@@ -70,7 +94,6 @@ class FPLDataLoader:
                 except Exception as e:
                     warnings.warn(f"Failed to load {gw_file}: {str(e)}")
             df = pd.concat(dfs, ignore_index=True)
-
         # --- Fix duplicate round/GW column ---
         # merged_gw.csv has both 'round' and 'GW' columns with same data
         if 'GW' in df.columns and 'round' in df.columns:

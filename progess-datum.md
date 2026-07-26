@@ -21,11 +21,36 @@
 - [x] Направљени `reports/final_report.md` и `reports/final_report.pdf`.
 - [x] Направљени `presentation/final_presentation.md` и `.pptx` са шест слајдова и speaker notes.
 - [x] Направљен `app.py` са model/player/error приказима, historic/current изворима и legal-squad оптимизатором.
-- [x] Додата три app/optimizer теста; свих 14 regression тестова пролази.
+- [x] Додати app/optimizer/assistant тестови; свих 30 regression тестова пролази.
 - [x] README ажуриран канонским командама и ограничењима.
 - [ ] Ручно разумевање сваке свеске остаје опционо за учење; није предуслов за рад кода.
 - [ ] Потврда теме и Teams предаја нису рађене, у складу са одлуком да се пројекат не предаје.
 
+## Нова фаза — production FPL асистент
+
+- [x] Раздвојен one-fixture модел од директног five-GW average модела.
+- [x] Five-GW target сабира DGW унутар кола, рачуна blank као нулу и не користи збир пет краткорочних предикција.
+- [x] Додати schedule feature-и: fixture/blank/double бројеви, FDR распон, home rate и opponent strength.
+- [x] Потврђено званично DC правило: DEF CBIT ≥10; MID/FWD CBIRT ≥12; максимум +2 по мечу.
+- [x] Спречено дупло додавање DC поена у 2025/26; за старије сезоне додата означена вероватносна процена.
+- [x] Исправљен stale `merged_gw.csv` fallback, па су GW35–38 ушли у production тренинг.
+- [x] Production модели обучени на 2020/21–2025/26: 144.399 one-fixture и 118.802 five-GW реда.
+- [x] Додати top-25, два капитена, Markdown/JSON/CSV report и chat prompt пакет.
+- [x] Додати system prompt и недељни template за тим, буџет, FT, chip-ове и спољне изворе.
+- [x] Генерисан и проверен demo пакет за 2025/26 GW34.
+- [x] Додата засебна GW1/preseason путања обучена на пет season transition-а, без `cumulative_points_season` и `games_played_season` out-of-distribution улаза.
+- [x] Preseason holdout 2025/26: GW1 MAE 1,355 / Spearman 0,560; директни GW1–GW5 MAE 0,960 / Spearman 0,707.
+- [x] Додат постепени GW2–GW5 blend (20/40/60/80% актуелне форме), па пуни production модел од GW6.
+- [x] Реконструисан актуелни ownership из `selected_by_percent × total_players`; додат fixture-FDR fallback за празан preseason `team_strength`.
+- [x] Top-25 листе филтрирају недоступне играче; report/JSON чувају exclusions и `ep_next` sanity заставице преко ±2 поена.
+- [x] Исправљен Windows joblib CPU-detection застој у training entrypoint-у.
+- [x] Генерисан и проверен live 2026/27 GW1 пакет са засебним preseason моделима.
+- [x] Направљен Streamlit GW selector и приказ нових dual-horizon резултата.
+- [x] Додати captain cards, top-25, price/value графици, player comparison и FDR heatmap.
+- [x] Додати availability/news/xP risk приказ и унос тренутног састава, банке, FT-а, chip-ова и извора.
+- [x] Додати download report-а, попуњеног AI prompt-а, system role-а, CSV-а и JSON-а.
+- [x] Повезани CLI и Streamlit преко истог service слоја; API се позива само експлицитним кликом.
+- [x] Streamlit AppTest отворио свих 5 табова без изузетака; локални health-check вратио HTTP 200.
 ## Контролна листа
 
 ### Поправке pipeline-а

@@ -10,6 +10,10 @@ import plotly.express as px
 import streamlit as st
 
 from src.app_data import load_current_predictions
+from src.fpl_assistant.streamlit_ui import (
+    inject_theme,
+    render_weekly_assistant,
+)
 from src.optimization import aggregate_player_projections, optimize_fpl_squad
 
 
@@ -241,13 +245,8 @@ def render_optimizer(filtered: pd.DataFrame, prediction_column: str) -> None:
         )
 
 
-def main() -> None:
-    """Run the Streamlit app."""
-    st.set_page_config(
-        page_title="FPL ML Assistant",
-        page_icon="⚽",
-        layout="wide",
-    )
+def render_research_lab() -> None:
+    """Render the existing academic evaluation workspace."""
     st.title("⚽ FPL Machine Learning Assistant")
     st.caption(
         "Leakage-safe historical evaluation and squad planning from local data"
@@ -357,6 +356,29 @@ def main() -> None:
             str(FIGURES / "feature_importance_fixed.png"),
             width="stretch",
         )
+
+
+def main() -> None:
+    """Run the production assistant with the research view preserved."""
+    st.set_page_config(
+        page_title="FPL Command Center",
+        page_icon="⚽",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    inject_theme()
+    with st.sidebar:
+        st.markdown("## ⚽ FPL Assistant")
+        workspace = st.radio(
+            "Радни простор",
+            ["Недељни асистент", "Истраживање модела"],
+            label_visibility="collapsed",
+        )
+        st.divider()
+    if workspace == "Недељни асистент":
+        render_weekly_assistant()
+    else:
+        render_research_lab()
 
 
 if __name__ == "__main__":

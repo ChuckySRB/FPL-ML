@@ -47,9 +47,16 @@ Generated CSV/model artifacts are intentionally ignored by Git. The data source 
 streamlit run app.py
 ```
 
-The five tabs cover model results, player projections, largest errors, methodology, and squad optimization. Choose one or more gameweeks and a prediction model in the sidebar. The optimizer maximizes projected points subject to a £100m default budget, 2 GK/5 DEF/5 MID/3 FWD, and no more than three players per club.
+The default **Weekly Assistant** workspace selects a season and GW, loads an
+existing package, and only refreshes/recalculates when **Run predictions** is
+pressed. Its five tabs cover the current GW, the direct next-five-GW average,
+player comparison, risk flags, and the current-squad/AI handoff. The last tab
+downloads the report, completed strategy prompt, system role, CSV, and JSON.
 
-The data-source selector supports both the historical 2024/25 test and CSVs created by `predict_next_5_gameweeks.py`. Current exports are enriched with local player prices and club metadata before optimization. The included current export is from 2025/26; collect the new season and generate a fresh CSV before making 2026/27 decisions.
+Use **Model Research** in the sidebar to reopen the historical academic
+dashboard. Its optimizer remains available for leakage-safe test projections;
+the Weekly Assistant also includes an explicitly labelled wildcard squad
+optimizer for either forecast horizon.
 
 ## Final deliverables
 
@@ -61,3 +68,18 @@ The data-source selector supports both the historical 2024/25 test and CSVs crea
 ## Methodological safeguards
 
 All rolling features use prior information only (`shift(1)`), reset at season boundaries, and share the same pre-gameweek history for double-gameweek fixtures. Fixture context remains fixture-specific. Imputation is learned on training data only. The legacy `GKP` label is normalized to `GK`; test-only `AM` rows are reported but excluded from comparisons that lack training support.
+## Production weekly assistant
+
+The new assistant core trains two independent models: one fixture and a direct average over the next five gameweeks. It also retrofits pre-2025/26 targets with an explicitly estimated defensive-contribution bonus, while avoiding double-counting official 2025/26 points.
+
+```powershell
+python scripts/train_fpl_assistant.py
+python scripts/generate_gw_report.py --season 2025-26 --gw 34
+```
+
+The weekly command writes a Markdown report, structured JSON, player/fixture CSVs, and a ready-to-fill chat prompt under `outputs/assistant/<season>/gw<n>/`. See `FPL_ASSISTANT.md` for target definitions, validation results, limitations, and interface behavior.
+
+For a new season, use the same command with `--gw 1`. GW1 is routed through
+dedicated cross-season preseason models, GW2–GW5 progressively blend preseason
+and current evidence, and GW6+ uses the mature in-season models. Official
+`ep_next` is shown as a sanity reference, not treated as ground truth.
