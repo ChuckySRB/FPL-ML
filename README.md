@@ -1,166 +1,63 @@
-# Fantasy Premier League Machine Learning Assistant
+# Fantasy Premier League ML Assistant
 
-This project is an implementation for the Machine Learning Masters Course at the School of Electrical Engineering in Belgrade. The goal is to apply machine learning techniques to Fantasy Premier League (FPL) data and compare results with published research papers.
+This repository is a leakage-safe, partial reproduction of the OpenFPL player-performance study. It predicts FPL points per player-fixture, evaluates the models on a held-out season, and provides a local dashboard and legal-squad optimizer.
 
-## Project Objective
+## Final result
 
-Build a machine learning model to predict player performance in Fantasy Premier League, with results comparable to academic research papers. The system will eventually serve as a companion tool for FPL team selection.
+Training uses 2020/21-2023/24; 2024/25 is never used for fitting. The primary prospective test is GW32-38 (5,533 eligible player-fixtures). Unweighted XGBoost is best with **MAE 0.944, RMSE 1.842, and R² 0.315**. Random Forest (RMSE 1.846) and Linear Regression (1.856) are close. Large hauls remain the main failure mode.
 
-## Project Structure
+This is a partial paper reproduction: public FPL inputs are used, but the full Understat and availability feature set from OpenFPL is unavailable.
 
-```
-.
-├── configs/                    # Configuration files
-│   └── config.py              # Main project configuration
-├── data/
-│   ├── raw/                   # Raw data from FPL API
-│   ├── processed/             # Cleaned and feature-engineered data
-│   └── external/              # External data sources
-├── models/                    # Saved trained models
-├── notebooks/                 # Jupyter notebooks for exploration
-├── outputs/
-│   ├── figures/              # Visualization outputs
-│   ├── logs/                 # Training logs
-│   └── results/              # Evaluation results
-├── papers/                    # Reference research papers
-├── src/
-│   ├── data_collection/      # FPL API data collection
-│   │   ├── getters.py       # API getter functions
-│   │   ├── parsers.py       # Data parsing utilities
-│   │   └── teams_scraper.py # Team data scraper
-│   ├── preprocessing/        # Data preprocessing modules
-│   ├── models/               # ML model implementations
-│   └── evaluation/           # Model evaluation metrics
-└── requirements.txt          # Python dependencies
-```
+## Repository layout
 
-## Setup Instructions
+- `src/preprocessing/` — season-safe loading and lagged feature engineering.
+- `src/evaluation/` — metrics, return categories, and stable-club validation.
+- `src/optimization.py` — 15-player FPL squad optimization.
+- `scripts/` — canonical dataset, training, figure, and deliverable commands.
+- `notebooks/01...04` — EDA through final error analysis; `05_app.ipynb` is the older exploratory UI notebook.
+- `outputs/results/` and `outputs/figures/` — generated evaluation artifacts.
+- `reports/` and `presentation/` — final Markdown, PDF, and PowerPoint deliverables.
+- `app.py` — local Streamlit analysis tool.
 
-### 1. Virtual Environment
+## Reproduce the project
 
-Create and activate a virtual environment:
+Create an environment and install dependencies:
 
-```bash
-# Create virtual environment
+```powershell
 python -m venv .fpl
-
-# Activate (Windows)
-.fpl\Scripts\activate
-
-# Activate (Linux/Mac)
-source .fpl/bin/activate
+.fpl\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
-### 2. Install Dependencies
+Run the canonical workflow from the repository root:
 
-```bash
-pip install -r requirements.txt
+```powershell
+python scripts/build_fixed_dataset.py
+python scripts/run_academic_pipeline.py
+python scripts/create_eda_figures.py
+python scripts/create_deliverables.py
+python -m unittest discover -s tests -v
 ```
 
-### 3. Verify Installation
+Generated CSV/model artifacts are intentionally ignored by Git. The data source is [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League); rerun the scripts after raw data changes.
 
-```python
-python -c "import pandas, sklearn, xgboost; print('Installation successful!')"
+## Use the dashboard
+
+```powershell
+streamlit run app.py
 ```
 
-## Data Structure
+The five tabs cover model results, player projections, largest errors, methodology, and squad optimization. Choose one or more gameweeks and a prediction model in the sidebar. The optimizer maximizes projected points subject to a £100m default budget, 2 GK/5 DEF/5 MID/3 FWD, and no more than three players per club.
 
-The data folder contains data from past seasons as well as the current season:
+The data-source selector supports both the historical 2024/25 test and CSVs created by `predict_next_5_gameweeks.py`. Current exports are enriched with local player prices and club metadata before optimization. The included current export is from 2025/26; collect the new season and generate a fresh CSV before making 2026/27 decisions.
 
-- `season/cleaned_players.csv` : Overview stats for the season
-- `season/gws/gw_number.csv` : GW-specific stats for the particular season
-- `season/gws/merged_gws.csv` : GW-by-GW stats for each player in a single file
-- `season/players/player_name/gws.csv` : GW-by-GW stats for that specific player
-- `season/players/player_name/history.csv` : Prior seasons history stats for that specific player
+## Final deliverables
 
-## Accessing Data Programmatically
+- `reports/final_report.pdf` — complete Serbian-language project report.
+- `presentation/final_presentation.pptx` — six-slide, five-minute presentation with speaker notes.
+- `notebooks/04_evaluation_and_error_analysis.ipynb` — executed final evaluation notebook.
+- `progess-datum.md` — detailed audit trail, decisions, limitations, and checklist.
 
-You can access FPL data using the modules in `src/data_collection/`:
+## Methodological safeguards
 
-```python
-from src.data_collection import get_data, get_individual_player_data
-
-# Get general FPL data
-data = get_data()
-
-# Get specific player data
-player_data = get_individual_player_data(player_id=123)
-```
-
-### Using Historical Data from GitHub
-
-```python
-import pandas as pd
-
-# URL of the CSV file (example)
-url = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/2023-24/gws/merged_gw.csv"
-
-# Read the CSV file into a pandas DataFrame
-df = pd.read_csv(url)
-```
-
-## Player Position Mapping
-
-In the FPL data, `element_type` corresponds to positions:
-- 1 = GK (Goalkeeper)
-- 2 = DEF (Defender)
-- 3 = MID (Midfielder)
-- 4 = FWD (Forward)
-
-## Downloading Team Data
-
-You can download data for a specific team:
-
-```bash
-cd src/data_collection
-python teams_scraper.py <team_id> <season_code> <start_gw>
-
-# Example:
-python teams_scraper.py 2572486 25_26 1
-```
-
-This creates a folder `team_<team_id>_data<season>` with all important data.
-
-## Configuration
-
-Project settings are centralized in [configs/config.py](configs/config.py):
-- API URLs
-- Data directories
-- Model parameters
-- Feature engineering settings
-- Evaluation metrics
-
-## Next Steps
-
-1. **Data Collection**: Download historical FPL data for multiple seasons
-2. **Data Preprocessing**: Clean and engineer features from raw data
-3. **Model Training**: Implement and train ML models (scikit-learn, XGBoost, LightGBM)
-4. **Evaluation**: Compare results with research papers using standard metrics
-5. **Deployment**: Build a usable FPL companion tool
-
-## Reference Papers
-
-The project includes two research papers for baseline comparison:
-- [Enhancing Fantasy Premier League with ML.pdf](papers/Enhancing Fantasy Premier League with ML.pdf)
-- [OpenFPL.pdf](papers/OpenFPL.pdf)
-
-## Technologies Used
-
-- **Data Processing**: pandas, numpy
-- **Machine Learning**: scikit-learn, XGBoost, LightGBM, CatBoost
-- **Visualization**: matplotlib, seaborn, plotly
-- **Hyperparameter Tuning**: Optuna
-- **Experimentation**: Jupyter notebooks
-
-## Contributing
-
-This is an academic project. Suggestions and improvements are welcome through issues and pull requests.
-
-## License
-
-This project is for educational purposes as part of Master Studies at the University of Belgrade.
-
-## Acknowledgments
-
-- FPL API for providing data access
-- [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) for historical data repository
+All rolling features use prior information only (`shift(1)`), reset at season boundaries, and share the same pre-gameweek history for double-gameweek fixtures. Fixture context remains fixture-specific. Imputation is learned on training data only. The legacy `GKP` label is normalized to `GK`; test-only `AM` rows are reported but excluded from comparisons that lack training support.

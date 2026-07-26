@@ -24,6 +24,11 @@ def read_csv_safe(file_path: Path) -> pd.DataFrame:
     return pd.read_csv(file_path, encoding='utf-8', errors='ignore')
 
 
+def normalize_position_labels(series: pd.Series) -> pd.Series:
+    '''Normalize historical aliases to the current FPL position labels.'''
+    return series.replace({'GKP': 'GK'})
+
+
 class FPLDataLoader:
     """Loader for FPL datasets"""
 
@@ -80,7 +85,7 @@ class FPLDataLoader:
         position_to_id = {'GK': 1, 'GKP': 1, 'DEF': 2, 'MID': 3, 'FWD': 4}
         if 'position' in df.columns and df['position'].dtype == object:
             df['element_type'] = df['position'].map(position_to_id)
-            df['position_label'] = df['position']
+            df['position_label'] = normalize_position_labels(df['position'])
         elif 'element_type' in df.columns:
             df['position_label'] = df['element_type'].map(POSITIONS)
 

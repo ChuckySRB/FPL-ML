@@ -43,3 +43,8 @@ openpyxl>=3.1.0  # For Excel files
 # Statistics
 scipy>=1.11.0
 statsmodels>=0.14.0
+
+# Local application and final deliverables
+streamlit>=1.40.0
+python-pptx>=1.0.0
+reportlab>=4.0.0

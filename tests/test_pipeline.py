@@ -12,11 +12,23 @@ from src.evaluation.cross_validation import (
 from src.evaluation.tracker import _get_category
 from src.preprocessing.feature_engineering import FPLFeatureEngineer
 from src.preprocessing.schemas import validate_gameweek_data
+from src.preprocessing.data_loader import normalize_position_labels
 
 
 class FeatureEngineeringTests(unittest.TestCase):
     def setUp(self):
         self.engineer = FPLFeatureEngineer()
+
+    def test_legacy_goalkeeper_label_is_normalized(self):
+        frame = pd.DataFrame({
+            'position': ['GKP', 'GK', 'DEF'],
+            'element': [1, 2, 3],
+            'round': [1, 1, 1],
+            'total_points': [0, 0, 0],
+            'minutes': [0, 0, 0],
+        })
+        normalized = normalize_position_labels(frame['position'])
+        self.assertEqual(normalized.tolist(), ['GK', 'GK', 'DEF'])
 
     def test_history_does_not_cross_season_boundary(self):
         frame = pd.DataFrame({
