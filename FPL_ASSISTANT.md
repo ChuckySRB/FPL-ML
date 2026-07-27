@@ -130,7 +130,8 @@ Run `streamlit run app.py`. The default Weekly Assistant workspace provides:
 
 1. season/GW selection, package freshness, model route, and validation MAE;
 2. an explicit **Run predictions** action with online refresh or offline cache;
-3. separate current-GW and direct next-five-GW top-25 rankings;
+3. separate current-GW and direct next-five-GW top-50 dashboard rankings
+   (the downloadable report remains a compact top 25);
 4. captain cards, price/value plots, player comparison, and FDR heatmaps;
 5. availability, news, and large model-versus-`ep_next` risk flags;
 6. current-squad, bank, free-transfer, chip, and source-note input;

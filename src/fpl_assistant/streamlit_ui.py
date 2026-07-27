@@ -45,6 +45,8 @@ MODE_LABELS = {
     "production_gw6_plus": "Пуни сезонски модел",
 }
 
+DASHBOARD_RANKING_LIMIT = 50
+
 
 def inject_theme() -> None:
     """Apply compact FPL-inspired styling without external assets."""
@@ -252,11 +254,11 @@ def _render_ranked_table(
     prediction_column: str,
     current_horizon: bool,
 ) -> None:
-    """Render the top 25 and price/projection chart."""
+    """Render the top dashboard rankings and price/projection chart."""
     if ranked.empty:
         st.warning("Нема играча за изабране филтере.")
         return
-    top = ranked.head(25).copy()
+    top = ranked.head(DASHBOARD_RANKING_LIMIT).copy()
     top.insert(0, "rank", range(1, len(top) + 1))
     if current_horizon:
         columns = [
@@ -306,7 +308,7 @@ def _render_ranked_table(
         top[columns].rename(columns=labels),
         width="stretch",
         hide_index=True,
-        height=690,
+        height=980,
         column_config={
             "Цена": st.column_config.NumberColumn(format="£%.1fm"),
             "Модел": st.column_config.NumberColumn(format="%.2f"),

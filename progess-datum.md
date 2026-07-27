@@ -46,7 +46,7 @@
 - [x] Исправљен Windows joblib CPU-detection застој у training entrypoint-у.
 - [x] Генерисан и проверен live 2026/27 GW1 пакет са засебним preseason моделима.
 - [x] Направљен Streamlit GW selector и приказ нових dual-horizon резултата.
-- [x] Додати captain cards, top-25, price/value графици, player comparison и FDR heatmap.
+- [x] Додати captain cards, top-50 UI листе, price/value графике, player comparison и FDR heatmap; report остаје компактни top-25.
 - [x] Додати availability/news/xP risk приказ и унос тренутног састава, банке, FT-а, chip-ова и извора.
 - [x] Додати download report-а, попуњеног AI prompt-а, system role-а, CSV-а и JSON-а.
 - [x] Повезани CLI и Streamlit преко истог service слоја; API се позива само експлицитним кликом.
