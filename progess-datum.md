@@ -51,6 +51,11 @@
 - [x] Додати download report-а, попуњеног AI prompt-а, system role-а, CSV-а и JSON-а.
 - [x] Повезани CLI и Streamlit преко истог service слоја; API се позива само експлицитним кликом.
 - [x] Streamlit AppTest отворио свих 5 табова без изузетака; локални health-check вратио HTTP 200.
+- [x] 20. августа 2026. live FPL API snapshot освежен на 599 играча и 380 fixtures; GW1 пакет поново генерисан.
+- [x] Додати persistent draft тим и watchlist са додавањем/уклањањем у интерфејсу.
+- [x] Додато једно дугме које прави Excel за upload и комплетан copy/paste prompt са system улогом, draft-ом и watchlist-ом.
+- [x] Excel садржи `UPUTSTVO`, `DRAFT_TIM`, `WATCHLIST`, обе TOP50 листе, `RIZICI`, све прогнозе и утакмице.
+- [x] Освежавање које не успе више се не представља као свеж snapshot; cache остаје сачуван уз јасну грешку.
 ## Контролна листа
 
 ### Поправке pipeline-а

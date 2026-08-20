@@ -134,12 +134,16 @@ Run `streamlit run app.py`. The default Weekly Assistant workspace provides:
    (the downloadable report remains a compact top 25);
 4. captain cards, price/value plots, player comparison, and FDR heatmaps;
 5. availability, news, and large model-versus-`ep_next` risk flags;
-6. current-squad, bank, free-transfer, chip, and source-note input;
-7. report, completed strategy prompt, system role, CSV, and JSON downloads;
+6. persistent draft-team and watchlist selection, plus bank, free-transfer,
+   chip, risk-profile, and source-note input;
+7. one AI Excel attachment containing draft/watchlist/top-50/risk/fixture data
+   and a complete copy/paste prompt containing the system and user roles;
 8. an optional legal 15-player wildcard optimizer for either horizon.
 
 The application never calls the official API on an ordinary rerun. Network
 refresh and prediction occur only after the user presses **Run predictions**.
+If an explicitly requested refresh fails, the application reports the failure
+instead of silently presenting the preserved cache as fresh.
 The older academic evaluation dashboard remains under Model Research.
 
 GW1 is supported before a `gws/` history exists. Returning players are matched

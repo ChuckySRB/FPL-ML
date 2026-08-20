@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -181,33 +182,203 @@ def rank_players(
 def build_strategy_prompt(
     base_prompt: str,
     squad: pd.DataFrame,
+    watchlist: pd.DataFrame,
     bank: float,
     free_transfers: int,
     chips: str,
     risk_profile: str,
     external_notes: str,
+    attachment_filename: str,
+    data_timestamp: str,
 ) -> str:
-    """Append structured account context to the generated weekly prompt."""
+    """Build a complete user prompt with draft, watchlist, and attachment."""
     if squad.empty:
         squad_text = "Тим није унет."
     else:
         lines = []
         for position in ("GK", "DEF", "MID", "FWD"):
-            names = squad.loc[
-                squad["position_label"].eq(position),
-                "name",
-            ].astype(str)
-            lines.append(f"{position}: {', '.join(names) or '—'}")
+            position_rows = squad[squad["position_label"].eq(position)]
+            player_details = [
+                _prompt_player_line(row)
+                for _, row in position_rows.iterrows()
+            ]
+            lines.append(
+                f"{position}: " + ("; ".join(player_details) or "—")
+            )
         squad_text = "\n".join(lines)
+    watchlist_text = (
+        "\n".join(
+            f"- {_prompt_player_line(row)}"
+            for _, row in watchlist.iterrows()
+        )
+        if not watchlist.empty
+        else "- Watchlist је празан."
+    )
     notes = external_notes.strip() or "Нису приложене додатне белешке."
+    questions_start = base_prompt.find("## Конкретна питања")
+    questions = (
+        base_prompt[questions_start:].rstrip()
+        if questions_start >= 0
+        else base_prompt.rstrip()
+    )
     return (
-        f"{base_prompt.rstrip()}\n\n"
+        "# FPL GW анализа — комплетан кориснички захтев\n\n"
+        f"Приложен је `{attachment_filename}`. Прво прочитај лист `UPUTSTVO`, "
+        "затим `DRAFT_TIM`, `WATCHLIST`, обе TOP 50 листе, `RIZICI` и "
+        "`SVE_PROGNOZE`. Excel је примарни машински прилог; немој "
+        "претпостављати да је играч у мом тиму ако није у `DRAFT_TIM`. "
+        f"Snapshot података и прогнозе је генерисан: {data_timestamp}.\n\n"
         "## Подаци унети у апликацији\n\n"
         f"```text\n{squad_text}\n"
         f"Новац у банци: £{bank:.1f}m\n"
         f"Број free transfer-а: {free_transfers}\n"
         f"Расположиви chip-ови: {chips.strip() or 'није наведено'}\n"
         f"Профил ризика: {risk_profile}\n```\n\n"
+        "### Watchlist\n\n"
+        f"{watchlist_text}\n\n"
         "### Спољни извори и белешке\n\n"
-        f"{notes}\n"
+        f"{notes}\n\n"
+        f"{questions}\n\n"
+        "## Обавезна завршна провера\n\n"
+        "Пре препоруке провери валидност draft-а (2 GK, 5 DEF, 5 MID, "
+        "3 FWD, максимум три из клуба и буџет), минуте, повреде, "
+        "суспензије и најновије вести. Посебно оцени сваког играча са "
+        "watchlist-е као `довести`, `пратити` или `избацити са листе`, уз "
+        "једну реченицу образложења. На крају дај конкретан draft XI, "
+        "клупу по редоследу, капитена, заменика и план до петог GW-а.\n"
+    )
+
+
+def _prompt_player_line(row: pd.Series) -> str:
+    """Format one compact player record for the copy/paste prompt."""
+    values = {
+        "price": pd.to_numeric(row.get("current_price"), errors="coerce"),
+        "current": pd.to_numeric(
+            row.get("predicted_points_current_gw"), errors="coerce"
+        ),
+        "five": pd.to_numeric(
+            row.get("predicted_average_next_5_gws"), errors="coerce"
+        ),
+    }
+    price = f"£{values['price']:.1f}m" if pd.notna(values["price"]) else "цена ?"
+    current = f"GW {values['current']:.2f}" if pd.notna(values["current"]) else "GW ?"
+    five = f"5GW {values['five']:.2f}/GW" if pd.notna(values["five"]) else "5GW ?"
+    status = str(row.get("status", "?") or "?")
+    return (
+        f"{row.get('name', '?')} ({row.get('team_name', '?')}, "
+        f"{row.get('position_label', '?')}, {price}, {current}, {five}, "
+        f"status {status})"
+    )
+
+
+def build_ai_workbook(
+    season: str,
+    gameweek: int,
+    players: pd.DataFrame,
+    fixtures: pd.DataFrame,
+    structured: dict[str, Any],
+    squad: pd.DataFrame,
+    watchlist: pd.DataFrame,
+    account: dict[str, Any],
+) -> bytes:
+    """Create the single Excel attachment consumed by the AI assistant."""
+    current = rank_players(
+        players,
+        "predicted_points_current_gw",
+        available_only=True,
+    )
+    if "current_gw_fixtures" in current:
+        current = current[current["current_gw_fixtures"].gt(0)]
+    long_term = rank_players(
+        players,
+        "predicted_average_next_5_gws",
+        available_only=True,
+    )
+    unavailable = pd.DataFrame(structured.get("excluded_unavailable", []))
+    disagreements = pd.DataFrame(
+        structured.get("large_model_ep_next_disagreements", [])
+    )
+    risks = pd.concat(
+        [
+            unavailable.assign(risk_type="недоступан/суспендован"),
+            disagreements.assign(risk_type="модел vs FPL xP > 2"),
+        ],
+        ignore_index=True,
+    )
+    guide = pd.DataFrame(
+        {
+            "поље": [
+                "сезона",
+                "gameweek",
+                "snapshot генерисан",
+                "важно",
+                "краткорочна прогноза",
+                "дугорочна прогноза",
+                "draft",
+                "watchlist",
+                "bank",
+                "free transfers",
+                "chip-ови",
+                "профил ризика",
+                "спољне белешке",
+            ],
+            "вредност": [
+                season,
+                gameweek,
+                account.get("generated_at", ""),
+                "Прогнозе су очекиване вредности, не гаранције.",
+                "predicted_points_current_gw: модел једне утакмице, сабран само за DGW",
+                "predicted_average_next_5_gws: директан засебан 5GW просек",
+                "Само играчи са листа DRAFT_TIM чине тренутни тим.",
+                "Кандидати за посебну процену су на листу WATCHLIST.",
+                account.get("bank", 0),
+                account.get("free_transfers", 1),
+                account.get("chips", ""),
+                account.get("risk_profile", "Умерен"),
+                account.get("external_notes", ""),
+            ],
+        }
+    )
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        guide.to_excel(writer, sheet_name="UPUTSTVO", index=False)
+        squad.to_excel(writer, sheet_name="DRAFT_TIM", index=False)
+        watchlist.to_excel(writer, sheet_name="WATCHLIST", index=False)
+        current.head(50).to_excel(writer, sheet_name="TOP50_GW", index=False)
+        long_term.head(50).to_excel(
+            writer,
+            sheet_name="TOP50_5GW",
+            index=False,
+        )
+        risks.to_excel(writer, sheet_name="RIZICI", index=False)
+        players.to_excel(writer, sheet_name="SVE_PROGNOZE", index=False)
+        fixtures.to_excel(writer, sheet_name="UTAKMICE", index=False)
+        for worksheet in writer.book.worksheets:
+            worksheet.freeze_panes = "A2"
+            worksheet.auto_filter.ref = worksheet.dimensions
+            worksheet.column_dimensions["A"].width = 22
+            for column in worksheet.iter_cols(
+                min_col=2,
+                max_col=min(worksheet.max_column, 12),
+            ):
+                worksheet.column_dimensions[column[0].column_letter].width = 18
+    return buffer.getvalue()
+
+
+def load_user_profile(path: Path) -> dict[str, Any]:
+    """Load the locally persisted draft/watchlist selection."""
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+
+
+def save_user_profile(path: Path, profile: dict[str, Any]) -> None:
+    """Persist account selections so they survive application restarts."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(profile, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )

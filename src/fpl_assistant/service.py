@@ -42,6 +42,11 @@ def ensure_current_prediction_inputs(
                 f"Could not download {missing_names} for {season}. "
                 "The official FPL API may not have opened that season yet."
             )
+        raise RuntimeError(
+            "Official FPL refresh failed; the existing cache was preserved "
+            "but was not treated as fresh. Retry the refresh, or explicitly "
+            "use offline mode if the cached snapshot is acceptable."
+        )
 
 
 def generate_weekly_package(

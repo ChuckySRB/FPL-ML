@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
@@ -10,12 +11,15 @@ import pandas as pd
 from src.fpl_assistant.dashboard import (
     availability_mask,
     available_gameweeks,
+    build_ai_workbook,
     build_strategy_prompt,
     discover_seasons,
     infer_default_gameweek,
     load_weekly_package,
     package_paths,
     rank_players,
+    load_user_profile,
+    save_user_profile,
 )
 
 
@@ -111,17 +115,65 @@ class AssistantDashboardTests(unittest.TestCase):
             prompt = build_strategy_prompt(
                 package["prompt"],
                 players,
+                watchlist=players,
                 bank=1.5,
                 free_transfers=2,
                 chips="Wildcard",
                 risk_profile="Умерен",
                 external_notes="Проверити конференцију.",
+                attachment_filename="assistant.xlsx",
+                data_timestamp="2026-08-20T19:00",
             )
 
         self.assertEqual(package["structured"]["season"], "2026-27")
         self.assertIn("MID: Example", prompt)
+        self.assertIn("Watchlist", prompt)
+        self.assertIn("assistant.xlsx", prompt)
+        self.assertIn("2026-08-20T19:00", prompt)
         self.assertIn("£1.5m", prompt)
         self.assertIn("Проверити конференцију.", prompt)
+
+    def test_workbook_and_profile_include_draft_and_watchlist(self):
+        players = pd.DataFrame(
+            {
+                "element": [1, 2],
+                "name": ["Draft Pick", "Watch Pick"],
+                "position_label": ["MID", "FWD"],
+                "team_name": ["A", "B"],
+                "current_price": [8.0, 7.0],
+                "status": ["a", "a"],
+                "predicted_points_current_gw": [6.0, 5.0],
+                "predicted_average_next_5_gws": [4.0, 4.5],
+                "current_gw_fixtures": [1, 1],
+            }
+        )
+        fixtures = pd.DataFrame(
+            {"element": [1, 2], "gw": [1, 1], "has_fixture": [True, True]}
+        )
+        workbook = build_ai_workbook(
+            "2026-27",
+            1,
+            players,
+            fixtures,
+            {"excluded_unavailable": [], "large_model_ep_next_disagreements": []},
+            players.iloc[[0]],
+            players.iloc[[1]],
+            {"bank": 1.0, "free_transfers": 0},
+        )
+        sheets = pd.ExcelFile(BytesIO(workbook)).sheet_names
+        self.assertIn("DRAFT_TIM", sheets)
+        self.assertIn("WATCHLIST", sheets)
+        self.assertIn("TOP50_GW", sheets)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            profile_path = Path(temporary_directory) / "profile.json"
+            save_user_profile(
+                profile_path,
+                {"squad_elements": [1], "watchlist_elements": [2]},
+            )
+            profile = load_user_profile(profile_path)
+        self.assertEqual(profile["squad_elements"], [1])
+        self.assertEqual(profile["watchlist_elements"], [2])
 
 
 if __name__ == "__main__":

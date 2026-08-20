@@ -51,7 +51,10 @@ The default **Weekly Assistant** workspace selects a season and GW, loads an
 existing package, and only refreshes/recalculates when **Run predictions** is
 pressed. Its five tabs cover the current GW, the direct next-five-GW average,
 player comparison, risk flags, and the current-squad/AI handoff. The last tab
-downloads the report, completed strategy prompt, system role, CSV, and JSON.
+stores a draft and watchlist, validates the 15-player squad, and generates one
+Excel attachment plus a complete copy/paste prompt containing both the system
+role and weekly request. Draft and watchlist selections persist locally after
+the package is generated.
 
 Use **Model Research** in the sidebar to reopen the historical academic
 dashboard. Its optimizer remains available for leakage-safe test projections;

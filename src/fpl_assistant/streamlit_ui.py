@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,12 +15,15 @@ from configs.config import MODELS_DIR, OUTPUTS_DIR, RAW_DATA_DIR
 from src.fpl_assistant.dashboard import (
     availability_mask,
     available_gameweeks,
+    build_ai_workbook,
     build_strategy_prompt,
     discover_seasons,
     infer_default_gameweek,
+    load_user_profile,
     load_weekly_package,
     package_paths,
     rank_players,
+    save_user_profile,
 )
 from src.fpl_assistant.service import generate_weekly_package
 from src.optimization import optimize_fpl_squad
@@ -31,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ASSISTANT_OUTPUTS = OUTPUTS_DIR / "assistant"
 PROMPT_TEMPLATE = ROOT / "prompts" / "weekly_analysis_template.md"
 SYSTEM_PROMPT = ROOT / "prompts" / "fpl_assistant_system_prompt.md"
+USER_PROFILE = ASSISTANT_OUTPUTS / "user_profile.json"
 
 POSITION_COLORS = {
     "GK": "#f7c948",
@@ -662,15 +665,44 @@ def _render_squad_ai(
         '<p class="section-copy">Унеси стварно стање тима; апликација га додаје уз report и prompt.</p>',
         unsafe_allow_html=True,
     )
+    profile = load_user_profile(USER_PROFILE)
     options = _player_options(players)
+    valid_elements = set(options)
+    squad_key = f"squad_{season}"
+    watchlist_key = f"watchlist_{season}"
+    if squad_key not in st.session_state:
+        st.session_state[squad_key] = [
+            int(element)
+            for element in profile.get("squad_elements", [])
+            if int(element) in valid_elements
+        ]
+    if watchlist_key not in st.session_state:
+        st.session_state[watchlist_key] = [
+            int(element)
+            for element in profile.get("watchlist_elements", [])
+            if int(element) in valid_elements
+        ]
     selected = st.multiselect(
         "Тренутни састав (до 15 играча)",
         list(options),
         format_func=lambda element: options[element],
         max_selections=15,
-        key=f"squad_{season}_{gameweek}",
+        key=squad_key,
     )
     squad = players[players["element"].isin(selected)].copy()
+    watchlist_selected = st.multiselect(
+        "Watchlist — додај играче за посебну AI процену",
+        list(options),
+        format_func=lambda element: options[element],
+        key=watchlist_key,
+        help=(
+            "Кликни × поред имена да га уклониш. Листа се чува локално "
+            "када генеришеш AI пакет."
+        ),
+    )
+    watchlist = players[
+        players["element"].isin(watchlist_selected)
+    ].copy()
     price_series = pd.to_numeric(
         squad.get("current_price"),
         errors="coerce",
@@ -691,45 +723,44 @@ def _render_squad_ai(
         "Новац у банци (£m)",
         0.0,
         20.0,
-        0.0,
+        float(profile.get("bank", 0.0)),
         0.1,
-        key=f"bank_{season}_{gameweek}",
+        key=f"bank_{season}",
     )
     free_transfers = middle.number_input(
         "Free transfer-и",
         0,
         5,
+        int(profile.get("free_transfers", 1)),
         1,
-        1,
-        key=f"fts_{season}_{gameweek}",
+        key=f"fts_{season}",
     )
     risk_profile = right.selectbox(
         "Профил ризика",
         ["Умерен", "Конзервативан", "Агресиван"],
-        key=f"risk_{season}_{gameweek}",
+        index=["Умерен", "Конзервативан", "Агресиван"].index(
+            profile.get("risk_profile", "Умерен")
+            if profile.get("risk_profile", "Умерен")
+            in ["Умерен", "Конзервативан", "Агресиван"]
+            else "Умерен"
+        ),
+        key=f"risk_{season}",
     )
     chips = st.text_input(
         "Расположиви chip-ови",
+        value=str(profile.get("chips", "")),
         placeholder="Wildcard, Free Hit, Bench Boost, Triple Captain",
-        key=f"chips_{season}_{gameweek}",
+        key=f"chips_{season}",
     )
     notes = st.text_area(
         "Белешке из конференција, објава и видео-анализа",
+        value=str(profile.get("external_notes", "")),
         placeholder=(
             "За сваки извор унеси датум, аутора/линк, "
             "кључну информацију и процену поузданости."
         ),
         height=160,
-        key=f"notes_{season}_{gameweek}",
-    )
-    strategy_prompt = build_strategy_prompt(
-        package["prompt"],
-        squad,
-        float(bank),
-        int(free_transfers),
-        chips,
-        risk_profile,
-        notes,
+        key=f"notes_{season}",
     )
     with st.expander("Моделски wildcard предлог"):
         st.caption(
@@ -772,60 +803,158 @@ def _render_squad_ai(
                     width="stretch",
                     hide_index=True,
                 )
-    st.markdown("#### Пакет спреман за анализу")
+    st.markdown("#### Генериши пакет за GPT")
+    expected_positions = {"GK": 2, "DEF": 5, "MID": 5, "FWD": 3}
+    actual_positions = {
+        position: int(squad["position_label"].eq(position).sum())
+        for position in expected_positions
+    }
+    invalid_positions = [
+        f"{position} {actual_positions[position]}/{expected}"
+        for position, expected in expected_positions.items()
+        if actual_positions[position] != expected
+    ]
+    club_counts = squad["team_name"].value_counts()
+    over_limit = club_counts[club_counts.gt(3)]
+    validation_messages = []
     if len(squad) != 15:
+        validation_messages.append(f"изабрано је {len(squad)}/15 играча")
+    if invalid_positions:
+        validation_messages.append("позиције: " + ", ".join(invalid_positions))
+    if not over_limit.empty:
+        validation_messages.append(
+            "више од три из клуба: "
+            + ", ".join(
+                f"{club} ({count})" for club, count in over_limit.items()
+            )
+        )
+    if price_series.sum() + float(bank) > 100.05:
+        validation_messages.append(
+            f"тим + банка = £{price_series.sum() + float(bank):.1f}m"
+        )
+    if validation_messages:
         st.warning(
-            "Prompt се може преузети, али за комплетну стратегију "
-            "унеси свих 15 играча."
+            "Draft још није валидан: " + "; ".join(validation_messages) + "."
+        )
+    else:
+        st.success(
+            f"Draft је структурно валидан. Watchlist: {len(watchlist)} играча."
         )
     system_prompt = (
         SYSTEM_PROMPT.read_text(encoding="utf-8")
         if SYSTEM_PROMPT.exists()
         else ""
     )
-    columns = st.columns(5)
-    downloads = [
-        ("Report", package["report"], f"report_gw{gameweek}.md", "text/markdown"),
-        (
-            "AI prompt",
-            strategy_prompt,
-            f"strategy_prompt_gw{gameweek}.md",
-            "text/markdown",
-        ),
-        (
-            "System role",
-            system_prompt,
-            "fpl_assistant_system_prompt.md",
-            "text/markdown",
-        ),
-        (
-            "Players CSV",
-            package["players"].to_csv(index=False),
-            f"predictions_gw{gameweek}.csv",
-            "text/csv",
-        ),
-        (
-            "JSON",
-            json.dumps(
-                package["structured"],
-                ensure_ascii=False,
-                indent=2,
-            ),
-            f"report_gw{gameweek}.json",
-            "application/json",
-        ),
-    ]
-    for column, download in zip(columns, downloads):
-        label, data, filename, mime = download
-        column.download_button(
-            label,
-            data,
-            file_name=filename,
-            mime=mime,
-            width="stretch",
+    attachment_filename = f"fpl_assistant_{season}_gw{gameweek}.xlsx"
+    generated_at = datetime.fromtimestamp(package["generated_at"]).isoformat(
+        timespec="minutes"
+    )
+    artifact_key = f"ai_artifacts_{season}_{gameweek}"
+    if st.button(
+        "Генериши AI Excel и комплетан prompt",
+        type="primary",
+        width="stretch",
+        key=f"generate_ai_{season}_{gameweek}",
+    ):
+        account = {
+            "bank": float(bank),
+            "free_transfers": int(free_transfers),
+            "chips": chips,
+            "risk_profile": risk_profile,
+            "external_notes": notes,
+            "generated_at": generated_at,
+        }
+        user_prompt = build_strategy_prompt(
+            package["prompt"],
+            squad,
+            watchlist,
+            float(bank),
+            int(free_transfers),
+            chips,
+            risk_profile,
+            notes,
+            attachment_filename,
+            generated_at,
         )
-    with st.expander("Преглед попуњеног prompt-а"):
-        st.code(strategy_prompt, language="markdown")
+        combined_prompt = (
+            "# SYSTEM INSTRUCTIONS\n\n"
+            f"{system_prompt.rstrip()}\n\n"
+            "---\n\n# USER REQUEST\n\n"
+            f"{user_prompt.rstrip()}\n"
+        )
+        workbook = build_ai_workbook(
+            season,
+            gameweek,
+            players,
+            package["fixtures"],
+            package["structured"],
+            squad,
+            watchlist,
+            account,
+        )
+        save_user_profile(
+            USER_PROFILE,
+            {
+                "season": season,
+                "squad_elements": [int(value) for value in selected],
+                "watchlist_elements": [
+                    int(value) for value in watchlist_selected
+                ],
+                **account,
+            },
+        )
+        st.session_state[artifact_key] = {
+            "workbook": workbook,
+            "user_prompt": user_prompt,
+            "combined_prompt": combined_prompt,
+        }
+        st.success(
+            "Пакет је генерисан и draft/watchlist су сачувани локално."
+        )
+    artifacts = st.session_state.get(artifact_key)
+    if artifacts:
+        st.info(
+            "Најједноставније: окачи Excel и копирај `Комплетан prompt`. "
+            "Он већ садржи и system улогу и твој недељни захтев."
+        )
+        columns = st.columns(4)
+        downloads = [
+            (
+                "1 · Excel за upload",
+                artifacts["workbook"],
+                attachment_filename,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            (
+                "2 · Комплетан prompt",
+                artifacts["combined_prompt"],
+                f"complete_prompt_gw{gameweek}.md",
+                "text/markdown",
+            ),
+            (
+                "Само user prompt",
+                artifacts["user_prompt"],
+                f"user_prompt_gw{gameweek}.md",
+                "text/markdown",
+            ),
+            (
+                "Само system role",
+                system_prompt,
+                "fpl_assistant_system_prompt.md",
+                "text/markdown",
+            ),
+        ]
+        for column, download in zip(columns, downloads):
+            label, data, filename, mime = download
+            column.download_button(
+                label,
+                data,
+                file_name=filename,
+                mime=mime,
+                width="stretch",
+            )
+        with st.expander("Копирај комплетан prompt", expanded=True):
+            st.code(artifacts["combined_prompt"], language="markdown")
     with st.expander("Преглед моделског report-а"):
         st.markdown(package["report"])
 
