@@ -119,6 +119,21 @@ def inject_theme() -> None:
             border-radius: 50%; margin-right: .4rem; background: #66f29a;
             box-shadow: 0 0 10px #66f29a;
         }
+        [data-baseweb="tag"],
+        [aria-label$="close by backspace"] {
+            background-color: #176342 !important;
+            color: #f1fff6 !important;
+        }
+        [data-baseweb="tag"] *,
+        [aria-label$="close by backspace"] * {
+            color: #f1fff6 !important;
+            font-weight: 700;
+        }
+        [data-baseweb="tag"] svg,
+        [aria-label$="close by backspace"] svg {
+            fill: #f1fff6 !important;
+            stroke: #f1fff6 !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
